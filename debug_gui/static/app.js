@@ -3,6 +3,7 @@ const state = {
   port: 8899,
   data: null,
   expanded: new Set([2]),
+  statusMap: loadStatusMap(),
   busy: false,
 };
 
@@ -17,6 +18,7 @@ const el = {
   refresh: document.querySelector("#refreshBtn"),
   zones: document.querySelector("#zones"),
   message: document.querySelector("#message"),
+  mapping: document.querySelector("#mapping"),
   scanResults: document.querySelector("#scanResults"),
   debug: document.querySelector("#debugText"),
 };
@@ -32,9 +34,7 @@ async function init() {
   }
 
   const savedHost = localStorage.getItem("dax88-host");
-  if (savedHost) {
-    el.host.value = savedHost;
-  }
+  if (savedHost) el.host.value = savedHost;
 
   el.connect.addEventListener("click", query);
   el.refresh.addEventListener("click", query);
@@ -42,6 +42,7 @@ async function init() {
   el.host.addEventListener("keydown", (event) => {
     if (event.key === "Enter") query();
   });
+  renderMapping();
 }
 
 function setMessage(text, error = false) {
@@ -64,6 +65,13 @@ function connection() {
   };
 }
 
+async function fetchState(host, port) {
+  const res = await fetch(`/api/query?host=${encodeURIComponent(host)}&port=${port}`);
+  const payload = await res.json();
+  if (!payload.ok) throw new Error(payload.error || "Query failed");
+  return payload.state;
+}
+
 async function query() {
   const { host, port } = connection();
   if (!host) {
@@ -74,15 +82,12 @@ async function query() {
   setBusy(true);
   setMessage("Querying DAX88...");
   try {
-    const res = await fetch(`/api/query?host=${encodeURIComponent(host)}&port=${port}`);
-    const payload = await res.json();
-    if (!payload.ok) throw new Error(payload.error || "Query failed");
     state.host = host;
     state.port = port;
-    state.data = payload.state;
+    state.data = await fetchState(host, port);
     localStorage.setItem("dax88-host", host);
     render();
-    setMessage(`Connected to ${payload.state.device_name || host}.`);
+    setMessage(`Connected to ${state.data.device_name || host}.`);
   } catch (err) {
     state.data = null;
     render();
@@ -142,12 +147,14 @@ function render() {
   const data = state.data;
   el.statusDot.classList.toggle("online", Boolean(data));
   el.deviceName.textContent = data?.device_name || "DAX88 Debug Control";
-  el.debug.textContent = data ? JSON.stringify(data, null, 2) : "No query yet.";
+  el.debug.textContent = data ? JSON.stringify({ statusMap: state.statusMap, raw: data }, null, 2) : "No query yet.";
   el.zones.innerHTML = "";
+  renderMapping();
 
   if (!data?.zones?.length) return;
 
-  for (const zone of data.zones) {
+  for (let zoneNum = 1; zoneNum <= data.zones.length; zoneNum += 1) {
+    const zone = logicalZone(data, zoneNum);
     const card = document.createElement("article");
     const expanded = state.expanded.has(zone.zone);
     card.className = `zone ${expanded ? "" : "collapsed"}`;
@@ -155,6 +162,18 @@ function render() {
     bindZone(card, zone);
     el.zones.appendChild(card);
   }
+}
+
+function logicalZone(data, logicalZoneNumber) {
+  const statusSlot = Number(state.statusMap[String(logicalZoneNumber)] || logicalZoneNumber);
+  const status = data.zones.find((zone) => zone.zone === statusSlot) || data.zones[logicalZoneNumber - 1];
+  const zoneName = data.config?.zones?.[logicalZoneNumber - 1] || `Zone ${logicalZoneNumber}`;
+  return {
+    ...status,
+    zone: logicalZoneNumber,
+    name: zoneName,
+    status_slot: status?.zone || logicalZoneNumber,
+  };
 }
 
 function zoneTemplate(zone, sources, expanded) {
@@ -175,6 +194,11 @@ function zoneTemplate(zone, sources, expanded) {
         <button class="toggle ${zone.power_on ? "on" : ""}" type="button" data-command="power" title="Power"></button>
         <button class="mute" type="button" data-command="mute" title="Mute">${zone.muted ? "&#128263;" : "&#128264;"}</button>
       </div>
+      <div class="power-row">
+        <button type="button" class="${zone.power_on ? "active" : ""}" data-power-value="true">On</button>
+        <button type="button" class="${!zone.power_on ? "active" : ""}" data-power-value="false">Off</button>
+      </div>
+      ${zone.status_slot !== zone.zone ? `<div class="slot-note">Showing status slot ${zone.status_slot}; commands still send zone ${zone.zone}.</div>` : ""}
       ${slider("volume", "Volume", zone.volume, 0, 38)}
       <div class="advanced">
         ${balance(zone.balance)}
@@ -222,6 +246,12 @@ function bindZone(card, zone) {
     send(zone.zone, "power", !zone.power_on);
   });
 
+  for (const button of card.querySelectorAll("[data-power-value]")) {
+    button.addEventListener("click", () => {
+      send(zone.zone, "power", button.dataset.powerValue === "true");
+    });
+  }
+
   card.querySelector("[data-command='mute']").addEventListener("click", () => {
     send(zone.zone, "mute", !zone.muted);
   });
@@ -255,6 +285,7 @@ function bindZone(card, zone) {
 
 async function send(zone, command, value) {
   if (!state.host) return;
+  const before = state.data;
   setBusy(true);
   setMessage(`Sending ${command} to zone ${zone}...`);
   try {
@@ -271,12 +302,72 @@ async function send(zone, command, value) {
     });
     const payload = await res.json();
     if (!payload.ok) throw new Error(payload.error || "Command failed");
-    await query();
+    const after = await fetchState(state.host, state.port);
+    const learned = learnStatusMap(zone, command, before, after);
+    state.data = after;
+    render();
+    setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}.`);
   } catch (err) {
     setMessage(err.message, true);
   } finally {
     setBusy(false);
   }
+}
+
+function learnStatusMap(logicalZoneNumber, command, before, after) {
+  const fieldByCommand = {
+    power: "power_raw",
+    mute: "mute_raw",
+    volume: "volume_raw",
+    source: "source_raw",
+    bass: "bass_raw",
+    treble: "treble_raw",
+    balance: "balance_raw",
+  };
+  const field = fieldByCommand[command];
+  if (!field || !before?.zones?.length || !after?.zones?.length) return "";
+
+  const changed = [];
+  for (const afterZone of after.zones) {
+    const beforeZone = before.zones.find((zone) => zone.zone === afterZone.zone);
+    if (beforeZone && beforeZone[field] !== afterZone[field]) changed.push(afterZone.zone);
+  }
+
+  if (changed.length === 1 && changed[0] !== logicalZoneNumber) {
+    state.statusMap[String(logicalZoneNumber)] = changed[0];
+    saveStatusMap();
+    renderMapping();
+    return `zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
+  }
+  return "";
+}
+
+function renderMapping() {
+  const entries = Object.entries(state.statusMap);
+  el.mapping.classList.toggle("hidden", entries.length === 0);
+  if (!entries.length) {
+    el.mapping.innerHTML = "";
+    return;
+  }
+  const text = entries.map(([zone, slot]) => `zone ${zone} -> slot ${slot}`).join(", ");
+  el.mapping.innerHTML = `<span>Status map: ${escapeHtml(text)}</span><button type="button">Reset</button>`;
+  el.mapping.querySelector("button").addEventListener("click", () => {
+    state.statusMap = {};
+    saveStatusMap();
+    render();
+  });
+}
+
+function loadStatusMap() {
+  try {
+    return JSON.parse(localStorage.getItem("dax88-status-map") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveStatusMap() {
+  localStorage.setItem("dax88-status-map", JSON.stringify(state.statusMap));
 }
 
 function clamp(value, min, max) {

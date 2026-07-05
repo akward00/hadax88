@@ -151,7 +151,8 @@ button:disabled {
   color: #111;
 }
 
-.message {
+.message,
+.mapping {
   margin: 10px 0;
   padding: 9px;
   border: 1px solid #5f5f5f;
@@ -160,6 +161,39 @@ button:disabled {
   font-size: 12px;
 }
 
+
+.mapping {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mapping button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.power-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.power-row button {
+  min-height: 30px;
+}
+
+.power-row button.active {
+  background: var(--accent);
+  color: #111;
+}
+
+.slot-note {
+  color: var(--muted);
+  font-size: 11px;
+}
 .message.error {
   border-color: var(--danger);
   color: var(--danger);
