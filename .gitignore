@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+
+# Local reverse-engineering artifacts kept out of the Home Assistant repo.
+*.zip
+*.pdf
+dax88_project_v0_2/
+dax88_project_v0_3/

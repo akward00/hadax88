@@ -1,0 +1,42 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This DAX88 is already configured."
+    },
+    "error": {
+      "cannot_connect": "Could not connect to a verified DAX88 on TCP port 8899.",
+      "no_devices_found": "No DAX88 devices were found on that subnet.",
+      "scan_too_large": "The subnet is too large to scan. Use a /23 or smaller subnet."
+    },
+    "menu": {
+      "manual": "Enter host manually",
+      "scan": "Scan a subnet"
+    },
+    "step": {
+      "manual": {
+        "data": {
+          "host": "Host or IP address",
+          "port": "Port"
+        },
+        "description": "Enter the IP address or hostname of the DAX88. Matrix control uses raw TCP on port 8899.",
+        "title": "Add DAX88"
+      },
+      "pick_device": {
+        "data": {
+          "host": "Device"
+        },
+        "title": "Choose DAX88"
+      },
+      "scan": {
+        "data": {
+          "subnet": "Subnet"
+        },
+        "description": "Actively scan for DAX88 devices by sending the Matrio query to TCP port 8899.",
+        "title": "Scan for DAX88"
+      },
+      "user": {
+        "title": "Dayton Audio DAX88"
+      }
+    }
+  }
+}
