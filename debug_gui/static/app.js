@@ -1,0 +1,294 @@
+const state = {
+  host: "",
+  port: 8899,
+  data: null,
+  expanded: new Set([2]),
+  busy: false,
+};
+
+const el = {
+  deviceName: document.querySelector("#deviceName"),
+  statusDot: document.querySelector("#statusDot"),
+  host: document.querySelector("#hostInput"),
+  port: document.querySelector("#portInput"),
+  subnet: document.querySelector("#subnetInput"),
+  connect: document.querySelector("#connectBtn"),
+  scan: document.querySelector("#scanBtn"),
+  refresh: document.querySelector("#refreshBtn"),
+  zones: document.querySelector("#zones"),
+  message: document.querySelector("#message"),
+  scanResults: document.querySelector("#scanResults"),
+  debug: document.querySelector("#debugText"),
+};
+
+async function init() {
+  try {
+    const res = await fetch("/api/defaults");
+    const defaults = await res.json();
+    el.subnet.value = defaults.subnet || "";
+    el.port.value = defaults.port || 8899;
+  } catch {
+    el.subnet.value = "192.168.1.0/24";
+  }
+
+  const savedHost = localStorage.getItem("dax88-host");
+  if (savedHost) {
+    el.host.value = savedHost;
+  }
+
+  el.connect.addEventListener("click", query);
+  el.refresh.addEventListener("click", query);
+  el.scan.addEventListener("click", scan);
+  el.host.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") query();
+  });
+}
+
+function setMessage(text, error = false) {
+  el.message.textContent = text;
+  el.message.classList.toggle("error", error);
+  el.message.classList.toggle("hidden", !text);
+}
+
+function setBusy(busy) {
+  state.busy = busy;
+  el.connect.disabled = busy;
+  el.scan.disabled = busy;
+  el.refresh.disabled = busy;
+}
+
+function connection() {
+  return {
+    host: el.host.value.trim(),
+    port: Number(el.port.value || 8899),
+  };
+}
+
+async function query() {
+  const { host, port } = connection();
+  if (!host) {
+    setMessage("Enter a DAX88 host/IP first.", true);
+    return;
+  }
+
+  setBusy(true);
+  setMessage("Querying DAX88...");
+  try {
+    const res = await fetch(`/api/query?host=${encodeURIComponent(host)}&port=${port}`);
+    const payload = await res.json();
+    if (!payload.ok) throw new Error(payload.error || "Query failed");
+    state.host = host;
+    state.port = port;
+    state.data = payload.state;
+    localStorage.setItem("dax88-host", host);
+    render();
+    setMessage(`Connected to ${payload.state.device_name || host}.`);
+  } catch (err) {
+    state.data = null;
+    render();
+    setMessage(err.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function scan() {
+  const subnet = el.subnet.value.trim();
+  const port = Number(el.port.value || 8899);
+  if (!subnet) {
+    setMessage("Enter a subnet to scan.", true);
+    return;
+  }
+
+  setBusy(true);
+  setMessage(`Scanning ${subnet}...`);
+  el.scanResults.classList.add("hidden");
+  el.scanResults.innerHTML = "";
+  try {
+    const res = await fetch(`/api/scan?subnet=${encodeURIComponent(subnet)}&port=${port}`);
+    const payload = await res.json();
+    if (!payload.ok) throw new Error(payload.error || "Scan failed");
+    renderScanResults(payload.devices);
+    setMessage(payload.devices.length ? `Found ${payload.devices.length} DAX88 candidate(s).` : "No DAX88 devices found.");
+  } catch (err) {
+    setMessage(err.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderScanResults(devices) {
+  el.scanResults.innerHTML = "";
+  el.scanResults.classList.toggle("hidden", devices.length === 0);
+  for (const device of devices) {
+    const item = document.createElement("div");
+    item.className = "device-option";
+    item.innerHTML = `
+      <div>
+        <strong>${escapeHtml(device.device_name || "DAX88")}</strong>
+        <span>${escapeHtml(device.host)} &middot; ${device.zones.length} zones &middot; ${device.sources.length} sources</span>
+      </div>
+      <button type="button">Use</button>
+    `;
+    item.querySelector("button").addEventListener("click", () => {
+      el.host.value = device.host;
+      query();
+    });
+    el.scanResults.appendChild(item);
+  }
+}
+
+function render() {
+  const data = state.data;
+  el.statusDot.classList.toggle("online", Boolean(data));
+  el.deviceName.textContent = data?.device_name || "DAX88 Debug Control";
+  el.debug.textContent = data ? JSON.stringify(data, null, 2) : "No query yet.";
+  el.zones.innerHTML = "";
+
+  if (!data?.zones?.length) return;
+
+  for (const zone of data.zones) {
+    const card = document.createElement("article");
+    const expanded = state.expanded.has(zone.zone);
+    card.className = `zone ${expanded ? "" : "collapsed"}`;
+    card.innerHTML = zoneTemplate(zone, data.config?.sources || [], expanded);
+    bindZone(card, zone);
+    el.zones.appendChild(card);
+  }
+}
+
+function zoneTemplate(zone, sources, expanded) {
+  const sourceOptions = sources.map((name, index) => {
+    const source = index + 1;
+    return `<option value="${source}" ${source === zone.source ? "selected" : ""}>${escapeHtml(name)}</option>`;
+  }).join("");
+
+  return `
+    <div class="zone-header">
+      <span class="zone-number">${zone.zone}</span>
+      <span class="zone-title">${escapeHtml(zone.name)}</span>
+      <button class="expand" type="button" data-action="expand" title="Expand zone">${expanded ? "^" : "v"}</button>
+    </div>
+    <div class="zone-body">
+      <div class="zone-main">
+        <select data-command="source">${sourceOptions}</select>
+        <button class="toggle ${zone.power_on ? "on" : ""}" type="button" data-command="power" title="Power"></button>
+        <button class="mute" type="button" data-command="mute" title="Mute">${zone.muted ? "&#128263;" : "&#128264;"}</button>
+      </div>
+      ${slider("volume", "Volume", zone.volume, 0, 38)}
+      <div class="advanced">
+        ${balance(zone.balance)}
+        ${slider("bass", "Bass", zone.bass, -12, 12)}
+        ${slider("treble", "Treble", zone.treble, -12, 12)}
+      </div>
+    </div>
+  `;
+}
+
+function slider(command, label, value, min, max) {
+  return `
+    <div class="control">
+      <div class="control-label"><span>${label} <strong data-value-for="${command}">(${value})</strong></span></div>
+      <div class="range-row">
+        <button class="step" type="button" data-step="${command}" data-delta="-1">-</button>
+        <input type="range" min="${min}" max="${max}" step="1" value="${value}" data-command="${command}">
+        <button class="step" type="button" data-step="${command}" data-delta="1">+</button>
+      </div>
+    </div>
+  `;
+}
+
+function balance(value) {
+  return `
+    <div class="control">
+      <div class="control-label"><span>Balance <strong data-value-for="balance">(${value})</strong></span></div>
+      <div class="balance-row">
+        <span>L</span>
+        <input type="range" min="0" max="20" step="1" value="${value}" data-command="balance">
+        <span>R</span>
+      </div>
+    </div>
+  `;
+}
+
+function bindZone(card, zone) {
+  card.querySelector("[data-action='expand']").addEventListener("click", () => {
+    if (state.expanded.has(zone.zone)) state.expanded.delete(zone.zone);
+    else state.expanded.add(zone.zone);
+    render();
+  });
+
+  card.querySelector("[data-command='power']").addEventListener("click", () => {
+    send(zone.zone, "power", !zone.power_on);
+  });
+
+  card.querySelector("[data-command='mute']").addEventListener("click", () => {
+    send(zone.zone, "mute", !zone.muted);
+  });
+
+  card.querySelector("[data-command='source']").addEventListener("change", (event) => {
+    send(zone.zone, "source", Number(event.target.value));
+  });
+
+  for (const input of card.querySelectorAll("input[type='range']")) {
+    input.addEventListener("input", (event) => {
+      const valueEl = card.querySelector(`[data-value-for='${event.target.dataset.command}']`);
+      if (valueEl) valueEl.textContent = `(${event.target.value})`;
+    });
+    input.addEventListener("change", (event) => {
+      send(zone.zone, event.target.dataset.command, Number(event.target.value));
+    });
+  }
+
+  for (const button of card.querySelectorAll("[data-step]")) {
+    button.addEventListener("click", () => {
+      const command = button.dataset.step;
+      const input = card.querySelector(`input[data-command='${command}']`);
+      const next = clamp(Number(input.value) + Number(button.dataset.delta), Number(input.min), Number(input.max));
+      input.value = next;
+      const valueEl = card.querySelector(`[data-value-for='${command}']`);
+      if (valueEl) valueEl.textContent = `(${next})`;
+      send(zone.zone, command, next);
+    });
+  }
+}
+
+async function send(zone, command, value) {
+  if (!state.host) return;
+  setBusy(true);
+  setMessage(`Sending ${command} to zone ${zone}...`);
+  try {
+    const res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        host: state.host,
+        port: state.port,
+        zone,
+        command,
+        value,
+      }),
+    });
+    const payload = await res.json();
+    if (!payload.ok) throw new Error(payload.error || "Command failed");
+    await query();
+  } catch (err) {
+    setMessage(err.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+init();

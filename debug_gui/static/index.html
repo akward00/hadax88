@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DAX88 Debug Control</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <div class="status-dot" id="statusDot"></div>
+          <h1 id="deviceName">DAX88 Debug Control</h1>
+        </div>
+        <button class="icon-button" id="refreshBtn" title="Refresh status">&#8635;</button>
+      </header>
+
+      <section class="connection">
+        <label>
+          <span>Host</span>
+          <input id="hostInput" placeholder="192.168.6.10" autocomplete="off">
+        </label>
+        <label class="port-field">
+          <span>Port</span>
+          <input id="portInput" type="number" value="8899" min="1" max="65535">
+        </label>
+        <button id="connectBtn">Connect</button>
+      </section>
+
+      <section class="scan">
+        <label>
+          <span>Subnet</span>
+          <input id="subnetInput" placeholder="192.168.6.0/24" autocomplete="off">
+        </label>
+        <button id="scanBtn">Scan</button>
+      </section>
+
+      <nav class="tabs">
+        <button class="active" type="button">Zone Control</button>
+        <button type="button" disabled>Group Control</button>
+      </nav>
+
+      <section id="message" class="message hidden"></section>
+      <section id="scanResults" class="scan-results hidden"></section>
+      <section id="zones" class="zones"></section>
+
+      <details class="debug">
+        <summary>Debug data</summary>
+        <pre id="debugText">No query yet.</pre>
+      </details>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
