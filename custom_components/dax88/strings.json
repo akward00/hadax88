@@ -8,10 +8,6 @@
       "no_devices_found": "No DAX88 devices were found on that subnet.",
       "scan_too_large": "The subnet is too large to scan. Use a /23 or smaller subnet."
     },
-    "menu": {
-      "manual": "Enter host manually",
-      "scan": "Scan a subnet"
-    },
     "step": {
       "manual": {
         "data": {
@@ -35,6 +31,10 @@
         "title": "Scan for DAX88"
       },
       "user": {
+        "menu_options": {
+          "manual": "Enter host manually",
+          "scan": "Scan a subnet"
+        },
         "title": "Dayton Audio DAX88"
       }
     }
