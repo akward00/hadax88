@@ -2,11 +2,13 @@ const state = {
   host: "",
   port: 8899,
   data: null,
+  snapshot: null,
   expanded: new Set(),
   statusMap: loadStatusMap(),
   busy: false,
   pollTimer: null,
   generation: -1,
+  lastUnknownPayload: "",
 };
 
 const el = {
@@ -96,6 +98,7 @@ async function query() {
     const payload = await connectState(host, port);
     if (!payload.state) throw new Error(payload.last_error || "No subscription state received yet");
     state.data = payload.state;
+    state.snapshot = payload;
     state.generation = payload.generation;
     localStorage.setItem("dax88-host", host);
     startStatePoll();
@@ -122,8 +125,12 @@ async function refreshSubscriptionState() {
     if (payload.generation !== state.generation && payload.state) {
       state.generation = payload.generation;
       state.data = payload.state;
+      state.snapshot = payload;
       render();
-      if (payload.last_event) {
+      if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
+        state.lastUnknownPayload = payload.last_unknown.raw_payload_hex;
+        setMessage(`Unknown frame: ${payload.last_unknown.reason || "unrecognized"}`, true);
+      } else if (payload.last_event) {
         setMessage(`Event: ${payload.last_event.command} zone ${payload.last_event.zones.join(",") || "?"}`);
       }
     }
@@ -182,7 +189,7 @@ function render() {
   const data = state.data;
   el.statusDot.classList.toggle("online", Boolean(data));
   el.deviceName.textContent = data?.device_name || "DAX88 Debug Control";
-  el.debug.textContent = data ? JSON.stringify({ statusMap: state.statusMap, raw: data }, null, 2) : "No query yet.";
+  el.debug.textContent = data ? JSON.stringify({ statusMap: state.statusMap, snapshot: state.snapshot, raw: data }, null, 2) : "No query yet.";
   el.zones.innerHTML = "";
   renderMapping();
 
@@ -381,9 +388,15 @@ async function send(zone, command, value) {
     if (payload.state) {
       const learned = learnStatusMap(zone, command, before, payload.state);
       state.data = payload.state;
+      state.snapshot = payload;
       state.generation = payload.generation ?? state.generation;
       render();
-      setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+      if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
+        state.lastUnknownPayload = payload.last_unknown.raw_payload_hex;
+        setMessage(`Unknown frame: ${payload.last_unknown.reason || "unrecognized"}`, true);
+      } else {
+        setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+      }
     } else {
       setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
     }

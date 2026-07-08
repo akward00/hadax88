@@ -25,9 +25,8 @@ from dax88_protocol import (
     apply_event_to_state,
     build_command_frame,
     build_query_frame,
-    extract_payloads,
-    parse_event,
-    parse_state,
+    frame_update_to_dict,
+    parse_frame,
     safe_name,
 )
 
@@ -48,6 +47,8 @@ class DaxSubscription:
         self.stop_event = threading.Event()
         self.state: DaxState | None = None
         self.last_event: dict | None = None
+        self.last_update: dict | None = None
+        self.last_unknown: dict | None = None
         self.last_error: str | None = None
         self.last_rx = 0.0
         self.generation = 0
@@ -95,6 +96,8 @@ class DaxSubscription:
                 "last_rx": self.last_rx,
                 "last_error": self.last_error,
                 "last_event": self.last_event,
+                "last_update": self.last_update,
+                "last_unknown": self.last_unknown,
                 "state": self.state.to_dict() if self.state else None,
             }
 
@@ -136,33 +139,47 @@ class DaxSubscription:
                 self._handle_frame(frame)
 
     def _handle_frame(self, frame: bytes) -> None:
-        payloads = extract_payloads(frame)
+        update = parse_frame(frame)
         now = time.time()
         with self.lock:
-            for payload in payloads:
-                event = parse_event(payload)
-                if event is not None:
-                    self.last_event = event.to_dict()
-                    self.state = apply_event_to_state(self.state, event)
-                parsed = parse_state(frame)
-                if parsed.config or parsed.zones:
-                    self.state = _merge_state(self.state, parsed)
-                self.last_rx = now
-                self.generation += 1
+            self.last_update = frame_update_to_dict(update)
+            update_type = update.get("type")
+            if update_type == "event":
+                event = update["event"]
+                self.last_event = event.to_dict()
+                self.state = apply_event_to_state(self.state, event)
+            elif update_type == "config":
+                self.state = _apply_config_update(self.state, update["config"], update.get("raw_frame_hex", ""))
+            elif update_type == "status":
+                self.state = _apply_status_update(self.state, update["state"])
+            else:
+                self.last_unknown = self.last_update
+            self.last_rx = now
+            self.generation += 1
 
 
-def _merge_state(current: DaxState | None, parsed: DaxState) -> DaxState:
-    """Merge pushed status/config frames without dropping either half."""
+def _apply_config_update(current: DaxState | None, config: DaxConfig, raw_frame_hex: str) -> DaxState:
+    zones = current.zones if current else []
+    if zones:
+        zones = _apply_config_names(zones, config)
+    return DaxState(
+        device_name=config.device_name or (current.device_name if current else None),
+        config=config,
+        zones=zones,
+        raw_response_hex=raw_frame_hex or (current.raw_response_hex if current else ""),
+    )
 
-    config = parsed.config or (current.config if current else None)
-    zones = parsed.zones or (current.zones if current else [])
+
+def _apply_status_update(current: DaxState | None, status: DaxState) -> DaxState:
+    config = current.config if current else status.config
+    zones = status.zones
     if config and zones:
         zones = _apply_config_names(zones, config)
     return DaxState(
-        device_name=(config.device_name if config else None) or parsed.device_name or (current.device_name if current else None),
+        device_name=(config.device_name if config else None) or status.device_name or (current.device_name if current else None),
         config=config,
         zones=zones,
-        raw_response_hex=parsed.raw_response_hex or (current.raw_response_hex if current else ""),
+        raw_response_hex=status.raw_response_hex,
     )
 
 

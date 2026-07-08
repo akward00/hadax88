@@ -211,6 +211,74 @@ def parse_event(payload: bytes) -> DaxEvent | None:
     )
 
 
+def parse_frame(frame: bytes) -> dict:
+    """Parse one complete DAX88 frame into a typed update."""
+
+    payloads = extract_payloads(frame)
+    if not payloads:
+        return {
+            "type": "unknown",
+            "reason": "no valid DAX88 payload/checksum found",
+            "command_id": None,
+            "raw_frame_hex": frame.hex(" "),
+            "raw_payload_hex": "",
+        }
+
+    payload = payloads[0]
+    config = parse_config(payload)
+    if config is not None:
+        return {
+            "type": "config",
+            "config": config,
+            "raw_frame_hex": frame.hex(" "),
+            "raw_payload_hex": payload.hex(" "),
+        }
+
+    status = parse_status_payload(payload)
+    if status is not None:
+        parsed = parse_state(frame)
+        return {
+            "type": "status",
+            "state": parsed,
+            "raw_frame_hex": frame.hex(" "),
+            "raw_payload_hex": payload.hex(" "),
+        }
+
+    event = parse_event(payload)
+    if event is not None:
+        return {
+            "type": "event",
+            "event": event,
+            "raw_frame_hex": frame.hex(" "),
+            "raw_payload_hex": payload.hex(" "),
+        }
+
+    command_id = payload[len(PREFIX) + 1] if payload.startswith(PREFIX + bytes([0x82])) and len(payload) > len(PREFIX) + 1 else None
+    return {
+        "type": "unknown",
+        "reason": "unrecognized payload type or command id",
+        "command_id": command_id,
+        "raw_frame_hex": frame.hex(" "),
+        "raw_payload_hex": payload.hex(" "),
+    }
+
+
+def frame_update_to_dict(update: dict) -> dict:
+    out = {"type": update.get("type")}
+    if "reason" in update:
+        out["reason"] = update["reason"]
+    if "command_id" in update:
+        out["command_id"] = update["command_id"]
+    if update.get("type") == "event" and update.get("event") is not None:
+        out["event"] = update["event"].to_dict()
+    elif update.get("type") == "config" and update.get("config") is not None:
+        out["config"] = asdict(update["config"])
+    elif update.get("type") == "status" and update.get("state") is not None:
+        out["zones"] = len(update["state"].zones)
+    out["raw_payload_hex"] = update.get("raw_payload_hex", "")
+    return out
+
+
 def apply_event_to_state(state: DaxState | None, event: DaxEvent) -> DaxState | None:
     if state is None or not event.zones:
         return state
