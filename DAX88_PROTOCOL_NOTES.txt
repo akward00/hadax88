@@ -274,6 +274,56 @@ The parser classifies a frame as unknown when:
 The debug GUI keeps the last unknown frame and shows it in the status area/debug
 data so we can capture it for later protocol work.
 
+Confirmed power event examples
+==============================
+
+Power event payloads are now confirmed from Matrio testing:
+
+    MCU+PAS+ 82 08 <value> <zone_mask_8_bytes> ff cc 26
+
+Where:
+
+- 08 is the power command/event id.
+- value 01 means power off.
+- value 02 means power on.
+- The next eight bytes are a zone mask.
+- In the zone mask, 01 marks the affected zone and 02 marks unaffected zones.
+
+Examples captured while toggling zones in Matrio:
+
+Zone 1 power on:
+
+    4d 43 55 2b 50 41 53 2b 82 08 02 01 02 02 02 02 02 02 02 ff cc 26
+
+Zone 1 power off:
+
+    4d 43 55 2b 50 41 53 2b 82 08 01 01 02 02 02 02 02 02 02 ff cc 26
+
+Zone 2 power on:
+
+    4d 43 55 2b 50 41 53 2b 82 08 02 02 01 02 02 02 02 02 02 ff cc 26
+
+Zone 2 power off:
+
+    4d 43 55 2b 50 41 53 2b 82 08 01 02 01 02 02 02 02 02 02 ff cc 26
+
+Zone 3 power on:
+
+    4d 43 55 2b 50 41 53 2b 82 08 02 02 02 01 02 02 02 02 02 ff cc 26
+
+Zone 3 power off:
+
+    4d 43 55 2b 50 41 53 2b 82 08 01 02 02 01 02 02 02 02 02 ff cc 26
+
+This matches the current debug parser for event frames:
+
+- value_raw 01 -> value false/off
+- value_raw 02 -> value true/on
+- zone mask position containing 01 -> logical target zone
+
+This does not solve the separate binary status-frame interpretation problem. It
+only confirms that event frames carry logical command changes correctly.
+
 RS232 manual command mapping
 ============================
 
