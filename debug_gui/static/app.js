@@ -251,9 +251,11 @@ function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
   const treble = statusFor(data, logicalZoneNumber, "treble");
   const balance = statusFor(data, logicalZoneNumber, "balance");
   const mute = statusFor(data, logicalZoneNumber, "mute");
+  const explicitPowerSlot = state.statusMap.power?.[String(logicalZoneNumber)];
+  const powerKnown = explicitPowerSlot != null;
   const power = statusFor(data, logicalZoneNumber, "power");
   const defaultPowerSlotClaimedBy = claimedPowerSlots[String(logicalZoneNumber)];
-  const hasPowerConflict = !state.statusMap.power?.[String(logicalZoneNumber)] && defaultPowerSlotClaimedBy && defaultPowerSlotClaimedBy !== logicalZoneNumber;
+  const hasPowerConflict = !powerKnown && defaultPowerSlotClaimedBy && defaultPowerSlotClaimedBy !== logicalZoneNumber;
   const zoneName = data.config?.zones?.[logicalZoneNumber - 1] || `Zone ${logicalZoneNumber}`;
 
   return {
@@ -276,8 +278,8 @@ function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
     power_on: power.power_on,
     power_raw: power.power_raw,
     power_status_slot: power.zone,
-    power_known: !hasPowerConflict,
-    status_conflict: hasPowerConflict ? `Power status slot ${logicalZoneNumber} is claimed by zone ${defaultPowerSlotClaimedBy}; this zone still needs calibration.` : "",
+    power_known: powerKnown && !hasPowerConflict,
+    status_conflict: !powerKnown ? "Power status is uncalibrated; use On/Off until this zone is observed changing." : (hasPowerConflict ? `Power status slot ${logicalZoneNumber} is claimed by zone ${defaultPowerSlotClaimedBy}; this zone still needs calibration.` : ""),
   };
 }
 
@@ -296,7 +298,7 @@ function zoneTemplate(zone, sources, expanded) {
     <div class="zone-body">
       <div class="zone-main">
         <select data-command="source">${sourceOptions}</select>
-        <button class="toggle ${zone.power_known && zone.power_on ? "on" : ""}" type="button" data-command="power" title="Power"></button>
+        <button class="toggle ${zone.power_known && zone.power_on ? "on" : ""}" type="button" data-command="power" title="${zone.power_known ? "Power" : "Power state unknown; use On/Off"}" ${zone.power_known ? "" : "disabled"}></button>
         <button class="mute" type="button" data-command="mute" title="Mute">${zone.muted ? "&#128263;" : "&#128264;"}</button>
       </div>
       <div class="power-row">
@@ -444,13 +446,12 @@ function learnStatusMapFromEvent(event, before, after) {
 
   if (changed.length !== 1) return "";
   state.statusMap[command] = state.statusMap[command] || {};
+  state.statusMap[command][String(logicalZoneNumber)] = changed[0];
   if (changed[0] === logicalZoneNumber) {
-    delete state.statusMap[command][String(logicalZoneNumber)];
     saveStatusMap();
     renderMapping();
     return `${command} for zone ${logicalZoneNumber} reads its own status slot`;
   }
-  state.statusMap[command][String(logicalZoneNumber)] = changed[0];
   saveStatusMap();
   renderMapping();
   return `${command} for zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
@@ -479,11 +480,12 @@ function learnStatusMap(logicalZoneNumber, command, before, after) {
     if (beforeZone && beforeZone[field] !== afterZone[field]) changed.push(afterZone.zone);
   }
 
-  if (changed.length === 1 && changed[0] !== logicalZoneNumber) {
+  if (changed.length === 1) {
     state.statusMap[command] = state.statusMap[command] || {};
     state.statusMap[command][String(logicalZoneNumber)] = changed[0];
     saveStatusMap();
     renderMapping();
+    if (changed[0] === logicalZoneNumber) return `${command} for zone ${logicalZoneNumber} reads its own status slot`;
     return `${command} for zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
   }
   return "";
