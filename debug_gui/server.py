@@ -414,7 +414,8 @@ class DaxDebugHandler(SimpleHTTPRequestHandler):
             if command not in {"power", "mute"}:
                 value = int(value)
             session = SUBSCRIPTIONS.get(host, port)
-            sent_hex = session.send(zone, command, value)
+            sent_bytes = Dax88Client(host, port, 2.0).send(zone, command, value)
+            sent_hex = sent_bytes.hex(" ")
         except Exception as err:
             self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_REQUEST)
             return

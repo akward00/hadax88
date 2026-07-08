@@ -384,9 +384,10 @@ function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
 }
 
 function zoneTemplate(zone, sources, expanded) {
-  const sourceOptions = sources.map((name, index) => {
+  const sourceCount = Math.max(8, sources.length, Number(zone.source || 0));
+  const sourceOptions = Array.from({ length: sourceCount }, (_, index) => {
     const source = index + 1;
-    return `<option value="${source}" ${source === zone.source ? "selected" : ""}>${escapeHtml(name)}</option>`;
+    return `<option value="${source}" ${source === zone.source ? "selected" : ""}>${escapeHtml(sourceLabel(sources, source))}</option>`;
   }).join("");
 
   return `
@@ -417,6 +418,9 @@ function zoneTemplate(zone, sources, expanded) {
   `;
 }
 
+function sourceLabel(sources, source) {
+  return sources[source - 1] || (source === 8 ? "Wi-Fi" : `Source ${source}`);
+}
 function slider(command, label, value, min, max) {
   return `
     <div class="control">
