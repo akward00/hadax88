@@ -1,0 +1,319 @@
+Dayton Audio DAX88 / Matrio TCP Protocol Notes
+Working notes from the debug GUI and packet captures
+
+Document status
+===============
+
+This is not an official protocol specification. It is a working description of
+what we have learned while comparing:
+
+- The Dayton Audio DAX88 user manual command model.
+- The Matrio Control mobile app network traffic.
+- The local DAX88 debug GUI implementation.
+- Live behavior from the amplifier at TCP port 8899.
+
+The command ids and value encodings line up with the DAX88-style matrix control
+model: zones, sources, volume, bass, treble, balance, power, and mute. The TCP
+framing and pushed status behavior are Matrio/app behavior that the manual does
+not clearly document in the copy we have.
+
+Important caveat
+================
+
+We do not yet fully understand how every status byte maps back to every logical
+zone. Commands use the logical zone number directly and work. Some status blocks
+appear to use a different slot order, especially for power. That is why the debug
+GUI currently treats uncalibrated power status as unknown until a pushed event and
+the following status block prove which raw status slot belongs to that logical
+zone.
+
+Transport
+=========
+
+Protocol transport:
+
+- TCP
+- Default port: 8899
+- The app opens a persistent TCP connection.
+- On connect, the app sends a startup query.
+- After the query, the amplifier sends pushed frames on the same connection.
+
+Observed startup behavior:
+
+1. Client opens TCP connection to the DAX88.
+2. Client sends the query payload.
+3. DAX88 replies with config/name and status frames.
+4. DAX88 continues to push command/event/status/config frames while the connection
+   remains open.
+
+This looks more like an implicit subscription than classic polling. The query is
+the startup request; the open socket is the subscription.
+
+Outer TCP frame
+===============
+
+Observed frames use this wrapper:
+
+Offset  Size  Description
+------  ----  -----------
+0       4     Magic/header: 18 96 18 20
+4       4     Payload length, little endian uint32
+8       2     Checksum, little endian uint16
+10      10    Reserved/zero bytes observed as 00 00 00 00 00 00 00 00 00 00
+20      N     Payload
+
+Checksum:
+
+- Sum all payload bytes.
+- Keep the low 16 bits.
+- Store little endian at offset 8.
+
+In Python terms:
+
+    checksum = sum(payload) & 0xffff
+    frame = magic + len(payload).to_bytes(4, 'little') + checksum.to_bytes(2, 'little') + ten_zero_bytes + payload
+
+Common payload prefix
+=====================
+
+Most observed payloads start with ASCII:
+
+    MCU+PAS+
+
+Hex:
+
+    4d 43 55 2b 50 41 53 2b
+
+After the prefix, observed payloads use byte 82 followed by a command/type byte.
+
+Startup query
+=============
+
+Payload:
+
+    MCU+PAS+ 82 0a ff ff ff 89 26
+
+Hex payload:
+
+    4d 43 55 2b 50 41 53 2b 82 0a ff ff ff 89 26
+
+Full observed/built frame:
+
+    18 96 18 20 0f 00 00 00 57 06 00 00 00 00 00 00 00 00 00 00 4d 43 55 2b 50 41 53 2b 82 0a ff ff ff 89 26
+
+This is the frame the Matrio app sends at startup. The DAX88 then returns config
+and status information.
+
+Command frames
+==============
+
+Command payload shape:
+
+    MCU+PAS+ 82 <command_id> <value> <zone_mask_8_bytes> ff cc 26
+
+The zone mask is eight bytes, one byte per zone:
+
+- 01 means the target zone.
+- 02 means not targeted.
+
+Example target mask for zone 4:
+
+    02 02 02 01 02 02 02 02
+
+Observed command ids
+====================
+
+Command    ID hex  Notes
+-------    ------  -----
+volume     01      Display 0..38, raw value is display + 1
+treble     02      Display -12..+12, raw value is display + 13
+bass       03      Display -12..+12, raw value is display + 13
+balance    05      Display 0..20, raw value is 1 + display * 3
+power      08      off = 01, on = 02
+source     0d      Source number 1..8
+mute       0e      unmuted = 01, muted = 02
+
+Examples
+========
+
+Zone 4 power on:
+
+    18 96 18 20 16 00 00 00 ab 04 00 00 00 00 00 00 00 00 00 00 4d 43 55 2b 50 41 53 2b 82 08 02 02 02 02 01 02 02 02 02 ff cc 26
+
+Zone 4 power off:
+
+    18 96 18 20 16 00 00 00 aa 04 00 00 00 00 00 00 00 00 00 00 4d 43 55 2b 50 41 53 2b 82 08 01 02 02 02 01 02 02 02 02 ff cc 26
+
+Zone 4 source 3:
+
+    18 96 18 20 16 00 00 00 b1 04 00 00 00 00 00 00 00 00 00 00 4d 43 55 2b 50 41 53 2b 82 0d 03 02 02 02 01 02 02 02 02 ff cc 26
+
+Config/name frames
+==================
+
+Payload type:
+
+    MCU+PAS+ 82 15 ...
+
+After 82 15, the payload contains length-prefixed strings:
+
+    <len> <bytes> <len> <bytes> ... terminator
+
+Observed order:
+
+1. Device name
+2. Zone 1 name
+3. Zone 2 name
+4. Zone 3 name
+5. Zone 4 name
+6. Zone 5 name
+7. Zone 6 name
+8. Zone 7 name
+9. Zone 8 name
+10. Source 1 name
+11. Source 2 name
+12. Source 3 name
+13. Source 4 name
+14. Source 5 name
+15. Source 6 name
+16. Source 7 name
+17. Source 8 name, if present
+
+Example observed names from this system:
+
+- Device: 957 house audio
+- Zones: Basement, Family Room, Terrace, Office, Pool, Hearth Room, ZONE7, ZONE8
+- Sources: Songbird/4Stream, Sonos, Patio TV, ofc BT AD-BA010, Input5, Input6, Input7
+
+Status frames
+=============
+
+Payload type:
+
+    MCU+PAS+ 82 0c ...
+
+After 82 0c, the first 56 bytes appear to be seven groups of eight bytes. The
+current parser interprets them as:
+
+Group  Index range  Meaning             Display conversion
+-----  -----------  -------             ------------------
+0      0..7         source_raw          source number 1..8
+1      8..15        volume_raw          display = raw - 1
+2      16..23       treble_raw          display = raw - 13
+3      24..31       bass_raw            display = raw - 13
+4      32..39       balance_raw         display = (raw - 1) / 3 when valid
+5      40..47       power_raw           01 = off, 02 = on
+6      48..55       mute_raw            01 = unmuted, 02 = muted
+
+Known problem with status frames
+================================
+
+The group interpretation appears broadly right, but slot-to-zone mapping is not
+fully solved.
+
+For example, the raw power group can show slot 1 as on even when Matrio says the
+logical Basement zone is off. We also observed Office power events where the
+immediate pushed event correctly identified Office, then a later status block
+appeared to update a different raw slot.
+
+What we know:
+
+- Command zone masks are logical and work as expected.
+- Event frames identify the logical zone correctly.
+- Status frame groups identify fields reasonably well.
+- The raw slot inside a status group may not always equal the logical zone number.
+- This mismatch has been most visible for power.
+
+Current debug GUI workaround:
+
+- Do not trust uncalibrated power status at startup.
+- When a pushed event says logical zone N changed field F to value V, remember the
+  last confirmed status block as a baseline.
+- When the next status block arrives, compare baseline vs new status.
+- If exactly one raw slot changed to value V for field F, learn:
+
+      logical zone N / field F -> raw status slot S
+
+- Persist that learned map in browser localStorage.
+
+Pushed event frames
+===================
+
+Event frames use the same command payload shape as command frames:
+
+    MCU+PAS+ 82 <command_id> <value> <zone_mask_8_bytes> ...
+
+The Matrio app appears to receive these on the persistent TCP connection. These
+frames are useful because they include the logical zone mask. In practice, they
+are often more reliable for immediate UI updates than the following status block,
+because the status block may use a raw slot order we have not mapped yet.
+
+Observed Office example:
+
+- Office source changed to Patio TV: event mask pointed to zone 4 and source value
+  was applied correctly.
+- Office power on/off: event mask pointed to zone 4, but the later status block
+  caused confusion until we stopped assuming status slot 4 always means logical
+  zone 4.
+
+Unknown frames
+==============
+
+The parser classifies a frame as unknown when:
+
+- The outer frame checksum is invalid or no valid payload can be extracted.
+- The payload does not match known config, status, or event shapes.
+- The payload starts like a command/event but the command id is not one we know.
+
+The debug GUI keeps the last unknown frame and shows it in the status area/debug
+data so we can capture it for later protocol work.
+
+Current conclusions
+===================
+
+Reasonable confidence:
+
+- TCP port 8899 is the Matrio/DAX88 control path.
+- The outer frame wrapper, payload length, and checksum are understood.
+- The startup query is understood.
+- Config/name frames are understood.
+- Command frame construction is understood for source, power, mute, volume, bass,
+  treble, and balance.
+- Event frames identify logical command changes.
+- The status block field groups are mostly understood.
+
+Not yet fully understood:
+
+- The authoritative mapping from status slots to logical zones for each field.
+- Whether status slot order can vary by field, by firmware, by grouping, or by
+  amplifier/expansion topology.
+- Whether there is another official query that returns the slot map.
+- Whether the manual's RS-232/control section describes this status slot mapping
+  in a way we have not extracted yet from the PDF.
+
+Recommended next debugging steps
+================================
+
+1. Start with all zones off and record a baseline status block.
+2. Turn on exactly one logical zone from Matrio.
+3. Save the event frame and the next status frame.
+4. Repeat for every zone.
+5. Build a table:
+
+      logical zone -> raw power status slot
+
+6. Repeat for source, mute, volume, bass, treble, and balance if needed.
+7. Once the slot map is known, move this logic from the debug GUI into the Home
+   Assistant integration.
+
+Home Assistant implication
+==========================
+
+The current Home Assistant integration should not be considered final until the
+status-slot mapping problem is solved. The command path can work while the status
+path is still wrong, which leads to dangerous UI behavior: Home Assistant may show
+one zone on/off based on another zone's raw status slot.
+
+The integration should eventually use the same persistent subscription model as
+Matrio, with event frames as primary updates and status blocks as confirmation.
+Until then, power state should be treated carefully.
