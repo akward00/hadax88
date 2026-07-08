@@ -7,11 +7,13 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 import json
+import re
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
 import struct
+import subprocess
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
@@ -231,16 +233,92 @@ SUBSCRIPTIONS = SubscriptionRegistry()
 
 
 def local_subnet_guess() -> str:
+    local_ip = _local_route_ip()
+    networks = _windows_local_networks()
+    if local_ip:
+        for network in networks:
+            if local_ip in network:
+                return str(network)
+        if networks:
+            return str(networks[0])
+        return str(ipaddress.ip_network(f"{local_ip}/24", strict=False))
+    if networks:
+        return str(networks[0])
+    return "192.168.1.0/24"
+
+
+def _local_route_ip() -> ipaddress.IPv4Address | None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("8.8.8.8", 80))
-        local_ip = sock.getsockname()[0]
+        return ipaddress.ip_address(sock.getsockname()[0])
     except OSError:
-        return "192.168.1.0/24"
+        return None
     finally:
         sock.close()
-    return str(ipaddress.ip_network(f"{local_ip}/24", strict=False))
 
+
+def _windows_local_networks() -> list[ipaddress.IPv4Network]:
+    try:
+        output = subprocess.check_output(["ipconfig"], text=True, encoding="utf-8", errors="ignore")
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    records = []
+    current: dict[str, object] = {}
+
+    def flush_current() -> None:
+        nonlocal current
+        if current:
+            records.append(current)
+            current = {}
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flush_current()
+            continue
+        if line.endswith(":") and " adapter " in line.lower():
+            flush_current()
+            continue
+
+        ip_match = re.search(r"IPv4 Address[.\s]*:\s*([0-9.]+)", line)
+        if ip_match:
+            try:
+                current["ip"] = ipaddress.ip_address(ip_match.group(1))
+            except ValueError:
+                current.pop("ip", None)
+            continue
+
+        mask_match = re.search(r"Subnet Mask[.\s]*:\s*([0-9.]+)", line)
+        if mask_match:
+            current["mask"] = mask_match.group(1)
+            continue
+
+        gateway_match = re.search(r"Default Gateway[.\s]*:\s*([0-9.]+)", line)
+        if gateway_match:
+            current["has_gateway"] = True
+
+    flush_current()
+
+    gateway_networks = []
+    other_networks = []
+    for record in records:
+        local_ip = record.get("ip")
+        mask = record.get("mask")
+        if not isinstance(local_ip, ipaddress.IPv4Address) or not isinstance(mask, str):
+            continue
+        try:
+            network = ipaddress.ip_network(f"{local_ip}/{mask}", strict=False)
+        except ValueError:
+            continue
+        if local_ip.is_loopback or local_ip.is_link_local or network.prefixlen >= 31:
+            continue
+        if record.get("has_gateway"):
+            gateway_networks.append(network)
+        else:
+            other_networks.append(network)
+    return gateway_networks + other_networks
 
 class DaxDebugHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
