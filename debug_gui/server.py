@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 import json
@@ -19,6 +20,7 @@ from dax88_protocol import (
     DEFAULT_PORT,
     MAGIC,
     Dax88Client,
+    DaxConfig,
     DaxState,
     apply_event_to_state,
     build_command_frame,
@@ -26,6 +28,7 @@ from dax88_protocol import (
     extract_payloads,
     parse_event,
     parse_state,
+    safe_name,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -143,17 +146,37 @@ class DaxSubscription:
                     self.state = apply_event_to_state(self.state, event)
                 parsed = parse_state(frame)
                 if parsed.config or parsed.zones:
-                    if parsed.config or self.state is None:
-                        self.state = parsed
-                    elif parsed.zones:
-                        self.state = DaxState(
-                            device_name=self.state.device_name,
-                            config=self.state.config,
-                            zones=parsed.zones,
-                            raw_response_hex=parsed.raw_response_hex,
-                        )
+                    self.state = _merge_state(self.state, parsed)
                 self.last_rx = now
                 self.generation += 1
+
+
+def _merge_state(current: DaxState | None, parsed: DaxState) -> DaxState:
+    """Merge pushed status/config frames without dropping either half."""
+
+    config = parsed.config or (current.config if current else None)
+    zones = parsed.zones or (current.zones if current else [])
+    if config and zones:
+        zones = _apply_config_names(zones, config)
+    return DaxState(
+        device_name=(config.device_name if config else None) or parsed.device_name or (current.device_name if current else None),
+        config=config,
+        zones=zones,
+        raw_response_hex=parsed.raw_response_hex or (current.raw_response_hex if current else ""),
+    )
+
+
+def _apply_config_names(zones, config: DaxConfig):
+    renamed = []
+    for zone in zones:
+        renamed.append(
+            replace(
+                zone,
+                name=safe_name(config.zones, zone.zone, f"Zone {zone.zone}"),
+                source_name=safe_name(config.sources, zone.source, f"Source {zone.source}"),
+            )
+        )
+    return renamed
 
 
 def _pop_frame(buf: bytes) -> tuple[bytes | None, bytes]:
