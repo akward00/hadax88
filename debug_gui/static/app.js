@@ -2,7 +2,7 @@ const state = {
   host: "",
   port: 8899,
   data: null,
-  expanded: new Set([2]),
+  expanded: new Set(),
   statusMap: loadStatusMap(),
   busy: false,
 };
@@ -153,7 +153,7 @@ function render() {
 
   if (!data?.zones?.length) return;
 
-  const claimed = claimedStatusOwners();
+  const claimed = claimedStatusOwners("power");
   for (let zoneNum = 1; zoneNum <= data.zones.length; zoneNum += 1) {
     const zone = logicalZone(data, zoneNum, claimed);
     const card = document.createElement("article");
@@ -165,28 +165,54 @@ function render() {
   }
 }
 
-function claimedStatusOwners() {
+function claimedStatusOwners(command) {
   const claimed = {};
-  for (const [logical, slot] of Object.entries(state.statusMap)) {
+  for (const [logical, slot] of Object.entries(state.statusMap[command] || {})) {
     claimed[String(slot)] = Number(logical);
   }
   return claimed;
 }
 
-function logicalZone(data, logicalZoneNumber, claimed) {
-  const explicitSlot = state.statusMap[String(logicalZoneNumber)];
-  const defaultSlotClaimedBy = claimed[String(logicalZoneNumber)];
-  const hasConflict = !explicitSlot && defaultSlotClaimedBy && defaultSlotClaimedBy !== logicalZoneNumber;
-  const statusSlot = Number(explicitSlot || logicalZoneNumber);
-  const status = data.zones.find((zone) => zone.zone === statusSlot) || data.zones[logicalZoneNumber - 1];
+function statusFor(data, logicalZoneNumber, command) {
+  const statusSlot = Number(state.statusMap[command]?.[String(logicalZoneNumber)] || logicalZoneNumber);
+  return data.zones.find((zone) => zone.zone === statusSlot) || data.zones[logicalZoneNumber - 1];
+}
+
+function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
+  const base = data.zones[logicalZoneNumber - 1];
+  const source = statusFor(data, logicalZoneNumber, "source");
+  const volume = statusFor(data, logicalZoneNumber, "volume");
+  const bass = statusFor(data, logicalZoneNumber, "bass");
+  const treble = statusFor(data, logicalZoneNumber, "treble");
+  const balance = statusFor(data, logicalZoneNumber, "balance");
+  const mute = statusFor(data, logicalZoneNumber, "mute");
+  const power = statusFor(data, logicalZoneNumber, "power");
+  const defaultPowerSlotClaimedBy = claimedPowerSlots[String(logicalZoneNumber)];
+  const hasPowerConflict = !state.statusMap.power?.[String(logicalZoneNumber)] && defaultPowerSlotClaimedBy && defaultPowerSlotClaimedBy !== logicalZoneNumber;
   const zoneName = data.config?.zones?.[logicalZoneNumber - 1] || `Zone ${logicalZoneNumber}`;
+
   return {
-    ...status,
+    ...base,
     zone: logicalZoneNumber,
     name: zoneName,
-    status_slot: status?.zone || logicalZoneNumber,
-    power_known: !hasConflict,
-    status_conflict: hasConflict ? `Status slot ${logicalZoneNumber} is claimed by zone ${defaultSlotClaimedBy}; this zone still needs calibration.` : "",
+    source: source.source,
+    source_name: source.source_name,
+    source_raw: source.source_raw,
+    volume: volume.volume,
+    volume_raw: volume.volume_raw,
+    bass: bass.bass,
+    bass_raw: bass.bass_raw,
+    treble: treble.treble,
+    treble_raw: treble.treble_raw,
+    balance: balance.balance,
+    balance_raw: balance.balance_raw,
+    muted: mute.muted,
+    mute_raw: mute.mute_raw,
+    power_on: power.power_on,
+    power_raw: power.power_raw,
+    power_status_slot: power.zone,
+    power_known: !hasPowerConflict,
+    status_conflict: hasPowerConflict ? `Power status slot ${logicalZoneNumber} is claimed by zone ${defaultPowerSlotClaimedBy}; this zone still needs calibration.` : "",
   };
 }
 
@@ -213,7 +239,7 @@ function zoneTemplate(zone, sources, expanded) {
         <button type="button" class="${zone.power_known && !zone.power_on ? "active" : ""}" data-power-value="false">Off</button>
       </div>
       ${zone.status_conflict ? `<div class="slot-note">${escapeHtml(zone.status_conflict)}</div>` : ""}
-      ${zone.status_slot !== zone.zone ? `<div class="slot-note">Showing status slot ${zone.status_slot}; commands still send zone ${zone.zone}.</div>` : ""}
+      ${zone.power_status_slot !== zone.zone ? `<div class="slot-note">Power reads status slot ${zone.power_status_slot}; commands still send zone ${zone.zone}.</div>` : ""}
       ${slider("volume", "Volume", zone.volume, 0, 38)}
       <div class="advanced">
         ${balance(zone.balance)}
@@ -349,35 +375,61 @@ function learnStatusMap(logicalZoneNumber, command, before, after) {
   }
 
   if (changed.length === 1 && changed[0] !== logicalZoneNumber) {
-    state.statusMap[String(logicalZoneNumber)] = changed[0];
+    state.statusMap[command] = state.statusMap[command] || {};
+    state.statusMap[command][String(logicalZoneNumber)] = changed[0];
     saveStatusMap();
     renderMapping();
-    return `zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
+    return `${command} for zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
   }
   return "";
 }
 
 function renderMapping() {
-  const entries = Object.entries(state.statusMap);
+  const entries = [];
+  for (const [command, map] of Object.entries(state.statusMap)) {
+    for (const [zone, slot] of Object.entries(map || {})) {
+      entries.push(`${command} zone ${zone} -> slot ${slot}`);
+    }
+  }
   el.mapping.classList.toggle("hidden", entries.length === 0);
   if (!entries.length) {
     el.mapping.innerHTML = "";
     return;
   }
-  const text = entries.map(([zone, slot]) => `zone ${zone} -> slot ${slot}`).join(", ");
-  el.mapping.innerHTML = `<span>Status map: ${escapeHtml(text)}</span><button type="button">Reset</button>`;
+  el.mapping.innerHTML = `<span>Status map: ${escapeHtml(entries.join(", "))}</span><button type="button">Reset</button>`;
   el.mapping.querySelector("button").addEventListener("click", () => {
-    state.statusMap = {};
+    state.statusMap = emptyStatusMap();
     saveStatusMap();
     render();
   });
 }
 
+function emptyStatusMap() {
+  return {
+    power: {},
+    mute: {},
+    volume: {},
+    source: {},
+    bass: {},
+    treble: {},
+    balance: {},
+  };
+}
+
 function loadStatusMap() {
   try {
-    return JSON.parse(localStorage.getItem("dax88-status-map") || "{}");
+    const raw = JSON.parse(localStorage.getItem("dax88-status-map") || "{}");
+    if (raw.power || raw.source || raw.volume) {
+      return { ...emptyStatusMap(), ...raw };
+    }
+    const migrated = emptyStatusMap();
+    for (const [zone, slot] of Object.entries(raw)) {
+      migrated.power[zone] = slot;
+    }
+    localStorage.setItem("dax88-status-map", JSON.stringify(migrated));
+    return migrated;
   } catch {
-    return {};
+    return emptyStatusMap();
   }
 }
 
