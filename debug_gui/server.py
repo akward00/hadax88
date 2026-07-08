@@ -10,12 +10,184 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
+import struct
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
-from dax88_protocol import DEFAULT_PORT, Dax88Client
+from dax88_protocol import (
+    DEFAULT_PORT,
+    MAGIC,
+    Dax88Client,
+    DaxState,
+    apply_event_to_state,
+    build_command_frame,
+    build_query_frame,
+    extract_payloads,
+    parse_event,
+    parse_state,
+)
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+
+
+class DaxSubscription:
+    """Persistent TCP subscription to DAX88 pushed status/events."""
+
+    def __init__(self, host: str, port: int = DEFAULT_PORT, timeout: float = 2.0) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.lock = threading.RLock()
+        self.sock: socket.socket | None = None
+        self.thread: threading.Thread | None = None
+        self.stop_event = threading.Event()
+        self.state: DaxState | None = None
+        self.last_event: dict | None = None
+        self.last_error: str | None = None
+        self.last_rx = 0.0
+        self.generation = 0
+        self.connected = False
+
+    def start(self) -> None:
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                return
+            self.stop_event.clear()
+            self.thread = threading.Thread(target=self._run, name=f"dax88-{self.host}:{self.port}", daemon=True)
+            self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        with self.lock:
+            sock = self.sock
+            self.sock = None
+        if sock:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def send(self, zone: int, command: str, value: int | bool) -> str:
+        frame = build_command_frame(zone, command, value)
+        with self.lock:
+            sock = self.sock
+        if sock is None:
+            raise RuntimeError("subscription socket is not connected")
+        sock.sendall(frame)
+        return frame.hex(" ")
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "host": self.host,
+                "port": self.port,
+                "connected": self.connected,
+                "generation": self.generation,
+                "last_rx": self.last_rx,
+                "last_error": self.last_error,
+                "last_event": self.last_event,
+                "state": self.state.to_dict() if self.state else None,
+            }
+
+    def _run(self) -> None:
+        backoff = 0.5
+        while not self.stop_event.is_set():
+            try:
+                with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
+                    sock.settimeout(0.5)
+                    with self.lock:
+                        self.sock = sock
+                        self.connected = True
+                        self.last_error = None
+                    sock.sendall(build_query_frame())
+                    backoff = 0.5
+                    self._read_loop(sock)
+            except Exception as err:
+                with self.lock:
+                    self.connected = False
+                    self.sock = None
+                    self.last_error = str(err)
+            if not self.stop_event.wait(backoff):
+                backoff = min(5.0, backoff * 1.5)
+
+    def _read_loop(self, sock: socket.socket) -> None:
+        buf = b""
+        while not self.stop_event.is_set():
+            try:
+                data = sock.recv(8192)
+            except socket.timeout:
+                continue
+            if not data:
+                raise RuntimeError("DAX88 closed the subscription socket")
+            buf += data
+            while True:
+                frame, buf = _pop_frame(buf)
+                if frame is None:
+                    break
+                self._handle_frame(frame)
+
+    def _handle_frame(self, frame: bytes) -> None:
+        payloads = extract_payloads(frame)
+        now = time.time()
+        with self.lock:
+            for payload in payloads:
+                event = parse_event(payload)
+                if event is not None:
+                    self.last_event = event.to_dict()
+                    self.state = apply_event_to_state(self.state, event)
+                parsed = parse_state(frame)
+                if parsed.config or parsed.zones:
+                    if parsed.config or self.state is None:
+                        self.state = parsed
+                    elif parsed.zones:
+                        self.state = DaxState(
+                            device_name=self.state.device_name,
+                            config=self.state.config,
+                            zones=parsed.zones,
+                            raw_response_hex=parsed.raw_response_hex,
+                        )
+                self.last_rx = now
+                self.generation += 1
+
+
+def _pop_frame(buf: bytes) -> tuple[bytes | None, bytes]:
+    start = buf.find(MAGIC)
+    if start < 0:
+        return None, b"" if len(buf) > 4096 else buf
+    if start > 0:
+        buf = buf[start:]
+    if len(buf) < 20:
+        return None, buf
+    payload_len = struct.unpack("<I", buf[4:8])[0]
+    total = 20 + payload_len
+    if len(buf) < total:
+        return None, buf
+    return buf[:total], buf[total:]
+
+
+class SubscriptionRegistry:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sessions: dict[tuple[str, int], DaxSubscription] = {}
+
+    def get(self, host: str, port: int) -> DaxSubscription:
+        key = (host, port)
+        with self.lock:
+            session = self.sessions.get(key)
+            if session is None:
+                session = DaxSubscription(host, port)
+                self.sessions[key] = session
+            session.start()
+            return session
+
+
+SUBSCRIPTIONS = SubscriptionRegistry()
 
 
 def local_subnet_guess() -> str:
@@ -42,6 +214,12 @@ class DaxDebugHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/query":
             self._handle_query(parsed)
             return
+        if parsed.path == "/api/connect":
+            self._handle_connect(parsed)
+            return
+        if parsed.path == "/api/state":
+            self._handle_state(parsed)
+            return
         if parsed.path == "/api/scan":
             self._handle_scan(parsed)
             return
@@ -57,16 +235,42 @@ class DaxDebugHandler(SimpleHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def _handle_query(self, parsed) -> None:
+    def _host_port(self, parsed) -> tuple[str, int]:
         qs = parse_qs(parsed.query)
         host = qs.get("host", [""])[0].strip()
         port = int(qs.get("port", [DEFAULT_PORT])[0])
-        timeout = float(qs.get("timeout", [2.0])[0])
         if not host:
-            self._json({"ok": False, "error": "host is required"}, HTTPStatus.BAD_REQUEST)
-            return
+            raise ValueError("host is required")
+        return host, port
+
+    def _handle_connect(self, parsed) -> None:
         try:
-            state = Dax88Client(host, port, timeout).query()
+            host, port = self._host_port(parsed)
+            session = SUBSCRIPTIONS.get(host, port)
+            deadline = time.time() + 3.0
+            snap = session.snapshot()
+            while time.time() < deadline and not snap["state"] and not snap["last_error"]:
+                time.sleep(0.05)
+                snap = session.snapshot()
+        except Exception as err:
+            self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._json({"ok": True, **snap})
+
+    def _handle_state(self, parsed) -> None:
+        try:
+            host, port = self._host_port(parsed)
+            session = SUBSCRIPTIONS.get(host, port)
+            snap = session.snapshot()
+        except Exception as err:
+            self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._json({"ok": True, **snap})
+
+    def _handle_query(self, parsed) -> None:
+        try:
+            host, port = self._host_port(parsed)
+            state = Dax88Client(host, port, 2.0).query()
         except Exception as err:
             self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_GATEWAY)
             return
@@ -82,11 +286,12 @@ class DaxDebugHandler(SimpleHTTPRequestHandler):
             value = payload["value"]
             if command not in {"power", "mute"}:
                 value = int(value)
-            ack = Dax88Client(host, port, float(payload.get("timeout", 2.0))).send(zone, command, value)
+            session = SUBSCRIPTIONS.get(host, port)
+            sent_hex = session.send(zone, command, value)
         except Exception as err:
             self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_REQUEST)
             return
-        self._json({"ok": True, "ack_hex": ack.hex(" ")})
+        self._json({"ok": True, "sent_hex": sent_hex, **session.snapshot()})
 
     def _handle_scan(self, parsed) -> None:
         qs = parse_qs(parsed.query)

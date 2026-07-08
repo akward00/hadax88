@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import socket
 import struct
 import time
@@ -21,6 +21,7 @@ COMMANDS = {
     "source": 0x0D,
     "mute": 0x0E,
 }
+COMMAND_NAMES = {value: key for key, value in COMMANDS.items()}
 
 MAX_VOLUME = 38
 
@@ -68,6 +69,19 @@ class DaxState:
             "zones": [asdict(zone) for zone in self.zones],
             "raw_response_hex": self.raw_response_hex,
         }
+
+
+@dataclass(slots=True)
+class DaxEvent:
+    command: str
+    command_id: int
+    value_raw: int | None
+    value: int | bool | None
+    zones: list[int]
+    raw_payload_hex: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 def wrap_payload(payload: bytes) -> bytes:
@@ -153,6 +167,90 @@ def extract_payloads(data: bytes) -> list[bytes]:
         pos = start + total
     return payloads
 
+
+
+def infer_zone_mask(mask: bytes) -> list[int]:
+    return [index + 1 for index, value in enumerate(mask[:8]) if value == 0x01]
+
+
+def raw_to_display(command: str, raw_value: int | None) -> int | bool | None:
+    if raw_value is None:
+        return None
+    if command == "power":
+        return raw_value == 0x02
+    if command == "mute":
+        return raw_value == 0x02
+    if command == "volume":
+        return raw_to_volume(raw_value)
+    if command in {"bass", "treble"}:
+        return raw_to_tone(raw_value)
+    if command == "balance":
+        return raw_to_balance(raw_value)
+    if command == "source":
+        return raw_value
+    return raw_value
+
+
+def parse_event(payload: bytes) -> DaxEvent | None:
+    if not payload.startswith(PREFIX + bytes([0x82])) or len(payload) < len(PREFIX) + 3:
+        return None
+    command_id = payload[len(PREFIX) + 1]
+    command = COMMAND_NAMES.get(command_id)
+    if command is None:
+        return None
+    value_raw = payload[len(PREFIX) + 2] if len(payload) > len(PREFIX) + 2 else None
+    mask_start = len(PREFIX) + 3
+    zones = infer_zone_mask(payload[mask_start : mask_start + 8]) if len(payload) >= mask_start + 8 else []
+    return DaxEvent(
+        command=command,
+        command_id=command_id,
+        value_raw=value_raw,
+        value=raw_to_display(command, value_raw),
+        zones=zones,
+        raw_payload_hex=payload.hex(" "),
+    )
+
+
+def apply_event_to_state(state: DaxState | None, event: DaxEvent) -> DaxState | None:
+    if state is None or not event.zones:
+        return state
+    zones = list(state.zones)
+    sources = state.config.sources if state.config else []
+    for zone_num in event.zones:
+        if not 1 <= zone_num <= len(zones):
+            continue
+        current = zones[zone_num - 1]
+        updates = {}
+        if event.command == "power" and isinstance(event.value, bool):
+            updates["power_on"] = event.value
+            updates["power_raw"] = event.value_raw or current.power_raw
+        elif event.command == "mute" and isinstance(event.value, bool):
+            updates["muted"] = event.value
+            updates["mute_raw"] = event.value_raw or current.mute_raw
+        elif event.command == "source" and isinstance(event.value, int):
+            updates["source"] = event.value
+            updates["source_raw"] = event.value_raw or current.source_raw
+            updates["source_name"] = safe_name(sources, event.value, f"Source {event.value}")
+        elif event.command == "volume" and isinstance(event.value, int):
+            updates["volume"] = event.value
+            updates["volume_raw"] = event.value_raw or current.volume_raw
+        elif event.command == "bass" and isinstance(event.value, int):
+            updates["bass"] = event.value
+            updates["bass_raw"] = event.value_raw or current.bass_raw
+        elif event.command == "treble" and isinstance(event.value, int):
+            updates["treble"] = event.value
+            updates["treble_raw"] = event.value_raw or current.treble_raw
+        elif event.command == "balance" and isinstance(event.value, int):
+            updates["balance"] = event.value
+            updates["balance_raw"] = event.value_raw or current.balance_raw
+        if updates:
+            zones[zone_num - 1] = replace(current, **updates)
+    return DaxState(
+        device_name=state.device_name,
+        config=state.config,
+        zones=zones,
+        raw_response_hex=state.raw_response_hex,
+    )
 
 def parse_config(payload: bytes) -> DaxConfig | None:
     if not payload.startswith(PREFIX + bytes([0x82, 0x15])):

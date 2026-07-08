@@ -5,6 +5,8 @@ const state = {
   expanded: new Set(),
   statusMap: loadStatusMap(),
   busy: false,
+  pollTimer: null,
+  generation: -1,
 };
 
 const el = {
@@ -65,11 +67,18 @@ function connection() {
   };
 }
 
-async function fetchState(host, port) {
-  const res = await fetch(`/api/query?host=${encodeURIComponent(host)}&port=${port}`);
+async function connectState(host, port) {
+  const res = await fetch(`/api/connect?host=${encodeURIComponent(host)}&port=${port}`);
   const payload = await res.json();
-  if (!payload.ok) throw new Error(payload.error || "Query failed");
-  return payload.state;
+  if (!payload.ok) throw new Error(payload.error || "Connect failed");
+  return payload;
+}
+
+async function fetchSubscriptionState(host, port) {
+  const res = await fetch(`/api/state?host=${encodeURIComponent(host)}&port=${port}`);
+  const payload = await res.json();
+  if (!payload.ok) throw new Error(payload.error || "State refresh failed");
+  return payload;
 }
 
 async function query() {
@@ -84,16 +93,42 @@ async function query() {
   try {
     state.host = host;
     state.port = port;
-    state.data = await fetchState(host, port);
+    const payload = await connectState(host, port);
+    if (!payload.state) throw new Error(payload.last_error || "No subscription state received yet");
+    state.data = payload.state;
+    state.generation = payload.generation;
     localStorage.setItem("dax88-host", host);
+    startStatePoll();
     render();
-    setMessage(`Connected to ${state.data.device_name || host}.`);
+    setMessage(`Subscribed to ${state.data.device_name || host}.`);
   } catch (err) {
     state.data = null;
     render();
     setMessage(err.message, true);
   } finally {
     setBusy(false);
+  }
+}
+
+function startStatePoll() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = setInterval(refreshSubscriptionState, 600);
+}
+
+async function refreshSubscriptionState() {
+  if (!state.host || state.busy) return;
+  try {
+    const payload = await fetchSubscriptionState(state.host, state.port);
+    if (payload.generation !== state.generation && payload.state) {
+      state.generation = payload.generation;
+      state.data = payload.state;
+      render();
+      if (payload.last_event) {
+        setMessage(`Event: ${payload.last_event.command} zone ${payload.last_event.zones.join(",") || "?"}`);
+      }
+    }
+  } catch (err) {
+    setMessage(err.message, true);
   }
 }
 
@@ -343,11 +378,15 @@ async function send(zone, command, value) {
     });
     const payload = await res.json();
     if (!payload.ok) throw new Error(payload.error || "Command failed");
-    const after = await fetchState(state.host, state.port);
-    const learned = learnStatusMap(zone, command, before, after);
-    state.data = after;
-    render();
-    setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}.`);
+    if (payload.state) {
+      const learned = learnStatusMap(zone, command, before, payload.state);
+      state.data = payload.state;
+      state.generation = payload.generation ?? state.generation;
+      render();
+      setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+    } else {
+      setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+    }
   } catch (err) {
     setMessage(err.message, true);
   } finally {
