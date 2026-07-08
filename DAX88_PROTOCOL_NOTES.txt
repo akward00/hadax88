@@ -274,6 +274,102 @@ The parser classifies a frame as unknown when:
 The debug GUI keeps the last unknown frame and shows it in the status area/debug
 data so we can capture it for later protocol work.
 
+RS232 manual command mapping
+============================
+
+The DAX88 manual documents an RS232 command form:
+
+    <xxPPuu\r
+
+Where:
+
+- xx is the zone number, 01..08.
+- PP is the action code.
+- uu is the command value.
+- CR is carriage return, 0d.
+
+Manual RS232 actions compared to observed TCP commands:
+
+Manual  Meaning   Manual value            TCP command id  TCP value
+------  -------   ------------            --------------  ---------
+PR      Power     00 off, 01 on           08              01 off, 02 on
+MU      Mute      00 off, 01 on           0e              01 off, 02 on
+VO      Volume    00..38                  01              manual value + 1
+TR      Treble    00..24 => -12..+12      02              manual value + 1
+BS      Bass      00..24 => -12..+12      03              manual value + 1
+BL      Balance   00..20                  05              appears to be 1 + value * 3
+CH      Source    01..08                  0d              same value, 01..08
+
+So the action set maps well. TCP appears to carry the same logical controls inside
+a binary Matrio wrapper, with command ids instead of ASCII action codes and mostly
+one-based raw values.
+
+Examples:
+
+- Manual <01PR00 means zone 1 power off.
+- TCP equivalent is command id 08, value 01, zone mask slot 1 = 01.
+- Manual <01PR01 means zone 1 power on.
+- TCP equivalent is command id 08, value 02, zone mask slot 1 = 01.
+- Manual <06CH04 means zone 6 source 4.
+- TCP equivalent is command id 0d, value 04, zone mask slot 6 = 01.
+
+RS232 manual status mapping
+===========================
+
+The manual documents status query:
+
+    ?xx\r
+
+Where xx is one zone, 01..08.
+
+Manual reply shape:
+
+    >xxaabbccddeeffgghhiijj\r
+
+Manual fields:
+
+Field  Meaning
+-----  -------
+aa     PA control status
+bb     Power control status
+cc     Mute control status
+dd     DT control status
+ee     Volume control status
+ff     Treble control status
+gg     Bass control status
+hh     Balance control status
+ii     Source control status
+jj     Keypad connection status, 00 not connected, 01 connected
+
+This is important because it does not match our first TCP status parser cleanly.
+Our parser assumed the 82 0c TCP status bytes were grouped as source, volume,
+treble, bass, balance, power, mute. The manual status order suggests a different
+possibility: TCP status may be a compact all-zone version of the RS232 per-zone
+status reply, or it may include only selected RS232 fields but in manual order.
+
+This could explain the startup bug: all physical zones were off, but our parser
+looked at one byte as power and interpreted it as on. That byte may not be power
+at all, or TCP status may encode power differently from command values.
+
+Current interpretation after comparing the manual
+=================================================
+
+The command path maps cleanly enough to continue using it:
+
+- Zone targeting is logical and matches manual zones 01..08.
+- Power, mute, volume, treble, bass, balance, and source all have obvious manual
+  equivalents.
+- TCP command values are mostly the manual values shifted by +1, except source
+  stays 1..8 and balance appears scaled.
+
+The status path does not yet map cleanly:
+
+- The manual exposes a per-zone ASCII status query.
+- The Matrio TCP stream exposes binary pushed status blocks.
+- We have not proven how the binary status block maps to the manual aa..jj fields.
+- We should treat TCP command/event frames as better understood than TCP status
+  frames until we capture enough known ground-truth transitions.
+
 Current conclusions
 ===================
 
