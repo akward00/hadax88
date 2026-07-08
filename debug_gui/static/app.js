@@ -9,6 +9,8 @@ const state = {
   pollTimer: null,
   generation: -1,
   lastUnknownPayload: "",
+  pendingEvent: null,
+  lastStatusData: null,
 };
 
 const el = {
@@ -100,6 +102,8 @@ async function query() {
     state.data = payload.state;
     state.snapshot = payload;
     state.generation = payload.generation;
+    state.pendingEvent = null;
+    state.lastStatusData = cloneState(payload.state);
     localStorage.setItem("dax88-host", host);
     startStatePoll();
     render();
@@ -123,15 +127,34 @@ async function refreshSubscriptionState() {
   try {
     const payload = await fetchSubscriptionState(state.host, state.port);
     if (payload.generation !== state.generation && payload.state) {
+      const update = payload.last_update || {};
+      let learned = "";
+
+      if (update.type === "event" && update.event?.zones?.length) {
+        state.pendingEvent = {
+          event: update.event,
+          baseline: cloneState(state.lastStatusData || state.data),
+        };
+      } else if (update.type === "status") {
+        if (state.pendingEvent) {
+          learned = learnStatusMapFromEvent(state.pendingEvent.event, state.pendingEvent.baseline, payload.state);
+          state.pendingEvent = null;
+        }
+        state.lastStatusData = cloneState(payload.state);
+      }
+
       state.generation = payload.generation;
       state.data = payload.state;
       state.snapshot = payload;
       render();
+
       if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
         state.lastUnknownPayload = payload.last_unknown.raw_payload_hex;
         setMessage(`Unknown frame: ${payload.last_unknown.reason || "unrecognized"}`, true);
-      } else if (payload.last_event) {
-        setMessage(`Event: ${payload.last_event.command} zone ${payload.last_event.zones.join(",") || "?"}`);
+      } else if (learned) {
+        setMessage(`Learned ${learned}.`);
+      } else if (update.type === "event" && update.event) {
+        setMessage(`Event: ${update.event.command} zone ${update.event.zones.join(",") || "?"}`);
       }
     }
   } catch (err) {
@@ -368,7 +391,6 @@ function bindZone(card, zone) {
 
 async function send(zone, command, value) {
   if (!state.host) return;
-  const before = state.data;
   setBusy(true);
   setMessage(`Sending ${command} to zone ${zone}...`);
   try {
@@ -385,26 +407,57 @@ async function send(zone, command, value) {
     });
     const payload = await res.json();
     if (!payload.ok) throw new Error(payload.error || "Command failed");
-    if (payload.state) {
-      const learned = learnStatusMap(zone, command, before, payload.state);
-      state.data = payload.state;
-      state.snapshot = payload;
-      state.generation = payload.generation ?? state.generation;
-      render();
-      if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
-        state.lastUnknownPayload = payload.last_unknown.raw_payload_hex;
-        setMessage(`Unknown frame: ${payload.last_unknown.reason || "unrecognized"}`, true);
-      } else {
-        setMessage(learned ? `Sent ${command}; learned ${learned}.` : `Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
-      }
-    } else {
-      setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
-    }
+    setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
   } catch (err) {
     setMessage(err.message, true);
   } finally {
     setBusy(false);
   }
+}
+
+function learnStatusMapFromEvent(event, before, after) {
+  if (!event?.command || !event.zones?.length || !before?.zones?.length || !after?.zones?.length) return "";
+  const logicalZoneNumber = Number(event.zones[0]);
+  const command = event.command;
+  const fieldByCommand = {
+    power: "power_raw",
+    mute: "mute_raw",
+    volume: "volume_raw",
+    source: "source_raw",
+    bass: "bass_raw",
+    treble: "treble_raw",
+    balance: "balance_raw",
+  };
+  const field = fieldByCommand[command];
+  if (!field) return "";
+
+  const changed = [];
+  for (const afterZone of after.zones) {
+    const beforeZone = before.zones.find((zone) => zone.zone === afterZone.zone);
+    if (!beforeZone) continue;
+    if (beforeZone[field] !== afterZone[field]) {
+      if (event.value_raw == null || afterZone[field] === event.value_raw) {
+        changed.push(afterZone.zone);
+      }
+    }
+  }
+
+  if (changed.length !== 1) return "";
+  state.statusMap[command] = state.statusMap[command] || {};
+  if (changed[0] === logicalZoneNumber) {
+    delete state.statusMap[command][String(logicalZoneNumber)];
+    saveStatusMap();
+    renderMapping();
+    return `${command} for zone ${logicalZoneNumber} reads its own status slot`;
+  }
+  state.statusMap[command][String(logicalZoneNumber)] = changed[0];
+  saveStatusMap();
+  renderMapping();
+  return `${command} for zone ${logicalZoneNumber} reads status slot ${changed[0]}`;
+}
+
+function cloneState(value) {
+  return value ? JSON.parse(JSON.stringify(value)) : null;
 }
 
 function learnStatusMap(logicalZoneNumber, command, before, after) {
