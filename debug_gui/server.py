@@ -54,6 +54,8 @@ class DaxSubscription:
         self.last_error: str | None = None
         self.last_rx = 0.0
         self.generation = 0
+        self.update_seq = 0
+        self.update_log: list[dict] = []
         self.connected = False
 
     def start(self) -> None:
@@ -100,6 +102,7 @@ class DaxSubscription:
                 "last_event": self.last_event,
                 "last_update": self.last_update,
                 "last_unknown": self.last_unknown,
+                "update_log": list(self.update_log),
                 "state": self.state.to_dict() if self.state else None,
             }
 
@@ -158,6 +161,12 @@ class DaxSubscription:
                 self.last_unknown = self.last_update
             self.last_rx = now
             self.generation += 1
+            self.update_seq += 1
+            logged_update = dict(self.last_update)
+            logged_update["seq"] = self.update_seq
+            logged_update["rx"] = now
+            self.update_log.append(logged_update)
+            self.update_log = self.update_log[-200:]
 
 
 def _apply_config_update(current: DaxState | None, config: DaxConfig, raw_frame_hex: str) -> DaxState:

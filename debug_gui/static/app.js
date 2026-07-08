@@ -13,6 +13,7 @@ const state = {
   lastStatusData: null,
   statusTracking: localStorage.getItem("dax88-status-tracking") === "1",
   statusLog: [],
+  lastTrackedSeq: 0,
 };
 
 const el = {
@@ -122,7 +123,7 @@ async function query() {
     state.generation = payload.generation;
     state.pendingEvent = null;
     state.lastStatusData = cloneState(payload.state);
-    appendStatusFrame(payload, "connect");
+    appendReceivedFrames(payload, "connect");
     localStorage.setItem("dax88-host", host);
     startStatePoll();
     render();
@@ -165,7 +166,7 @@ async function refreshSubscriptionState() {
       state.generation = payload.generation;
       state.data = payload.state;
       state.snapshot = payload;
-      appendStatusFrame(payload, "push");
+      appendReceivedFrames(payload, "push");
       render();
 
       if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
@@ -228,17 +229,31 @@ function renderScanResults(devices) {
   }
 }
 
-function appendStatusFrame(payload, source) {
-  const update = payload.last_update || {};
-  if (!state.statusTracking || update.type !== "status" || !payload.state) return;
-  const entry = {
-    at: new Date().toLocaleTimeString(),
-    source,
-    generation: payload.generation,
-    raw: update.raw_payload_hex || "",
-    interpretation: summarizeStatus(payload.state),
-  };
-  state.statusLog.unshift(entry);
+function appendReceivedFrames(payload, source) {
+  if (!state.statusTracking) return;
+  const updates = Array.isArray(payload.update_log) ? payload.update_log : [payload.last_update || {}];
+  const fresh = updates.filter((update) => {
+    if (!update || !update.type) return false;
+    if (update.seq == null) return update !== payload.last_update || payload.generation !== state.generation;
+    return update.seq > state.lastTrackedSeq;
+  });
+  if (!fresh.length) return;
+
+  for (const update of fresh) {
+    if (update.seq != null) state.lastTrackedSeq = Math.max(state.lastTrackedSeq, update.seq);
+    state.statusLog.unshift({
+      at: update.rx ? new Date(update.rx * 1000).toLocaleTimeString() : new Date().toLocaleTimeString(),
+      source,
+      generation: payload.generation,
+      seq: update.seq,
+      type: update.type,
+      raw: update.raw_payload_hex || "",
+      event: update.event || null,
+      config: update.config || null,
+      reason: update.reason || "",
+      interpretation: update.type === "status" && payload.state ? summarizeStatus(payload.state) : null,
+    });
+  }
   state.statusLog = state.statusLog.slice(0, 100);
   renderStatusTracker();
 }
@@ -270,17 +285,28 @@ function renderStatusTracker() {
   el.statusTrackerPanel.classList.toggle("hidden", !state.statusTracking);
   el.statusTrackerCount.textContent = `${state.statusLog.length} frame${state.statusLog.length === 1 ? "" : "s"}`;
   if (!state.statusLog.length) {
-    el.statusTrackerLog.textContent = "No status frames captured yet.";
+    el.statusTrackerLog.textContent = "No frames captured yet.";
     return;
   }
   el.statusTrackerLog.textContent = state.statusLog.map(formatStatusEntry).join("\n\n");
 }
 
 function formatStatusEntry(entry) {
-  const zones = entry.interpretation.map((zone) => (
+  const header = `[${entry.at}] ${entry.source} ${entry.type} frame${entry.seq ? ` #${entry.seq}` : ""} generation ${entry.generation}`;
+  const raw = `Actual bytes received:\n  ${entry.raw || "(none)"}`;
+  if (entry.type === "event" && entry.event) {
+    return `${header}\n${raw}\nOur interpretation:\n  event command=${entry.event.command} value=${entry.event.value} raw=${entry.event.value_raw} zones=${(entry.event.zones || []).join(",") || "?"}`;
+  }
+  if (entry.type === "config" && entry.config) {
+    return `${header}\n${raw}\nOur interpretation:\n  config device=${entry.config.device_name || "?"} zones=${(entry.config.zones || []).join(" | ")} sources=${(entry.config.sources || []).join(" | ")}`;
+  }
+  if (entry.type === "unknown") {
+    return `${header}\n${raw}\nOur interpretation:\n  unknown ${entry.reason || "unrecognized frame"}`;
+  }
+  const zones = (entry.interpretation || []).map((zone) => (
     `  Z${zone.zone} ${zone.name}: power=${zone.power_on ? "on" : "off"} mute=${zone.muted ? "on" : "off"} src=${zone.source} vol=${zone.volume} tr=${zone.treble} bs=${zone.bass} bal=${zone.balance} raw=[src:${zone.raw.source} vol:${zone.raw.volume} tr:${zone.raw.treble} bs:${zone.raw.bass} bal:${zone.raw.balance} pwr:${zone.raw.power} mute:${zone.raw.mute}]`
   )).join("\n");
-  return `[${entry.at}] ${entry.source} generation ${entry.generation}\nActual status bytes received:\n  ${entry.raw || "(none)"}\nOur interpretation:\n${zones}`;
+  return `${header}\n${raw}\nOur interpretation:\n${zones || "  no parsed zone state"}`;
 }
 function render() {
   const data = state.data;
