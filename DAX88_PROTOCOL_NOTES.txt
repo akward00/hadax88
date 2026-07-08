@@ -274,6 +274,41 @@ The parser classifies a frame as unknown when:
 The debug GUI keeps the last unknown frame and shows it in the status area/debug
 data so we can capture it for later protocol work.
 
+PA announcements and grouped zones
+==================================
+
+Two product features affect how we should read event/status frames:
+
+1. PA announcement mode
+
+   The DAX88 has a PA announcement feature. One input can be labeled/used as an
+   announcement source, and powered zones can automatically play that announcement.
+   The RS232 manual status reply includes field aa as "PA Control Status". This
+   means a status byte that looks unrelated to normal source/power may be PA
+   state, and PA activity may temporarily override or coexist with the normal
+   source selection.
+
+   Parser implication: do not assume every source-looking change is a user source
+   command. Some frames or status bytes may reflect PA state or PA override state.
+   The TCP status block may include an all-zone PA field corresponding to the
+   manual aa field.
+
+2. Zone grouping
+
+   The Matrio app can group zones and apply changes to the group for multi-room
+   listening. The TCP command/event format already supports this because the
+   eight-byte zone mask can contain more than one 01 value.
+
+   Parser implication: event frames are not guaranteed to target exactly one zone.
+   A command like power, source, volume, mute, bass, treble, or balance may apply
+   to multiple zones in one event frame. Any learning logic that expects exactly
+   one changed zone is only valid for single-zone tests and should not be used for
+   grouped changes.
+
+For debugging status mapping, group mode should be disabled unless we are
+explicitly testing group behavior. Otherwise a group event may correctly change
+several zones at once and make the status diff ambiguous.
+
 Confirmed power event examples
 ==============================
 
