@@ -11,6 +11,8 @@ const state = {
   lastUnknownPayload: "",
   pendingEvent: null,
   lastStatusData: null,
+  statusTracking: localStorage.getItem("dax88-status-tracking") === "1",
+  statusLog: [],
 };
 
 const el = {
@@ -27,6 +29,11 @@ const el = {
   mapping: document.querySelector("#mapping"),
   scanResults: document.querySelector("#scanResults"),
   debug: document.querySelector("#debugText"),
+  statusTracking: document.querySelector("#statusTrackingInput"),
+  statusTrackerPanel: document.querySelector("#statusTrackerPanel"),
+  statusTrackerLog: document.querySelector("#statusTrackerLog"),
+  statusTrackerCount: document.querySelector("#statusTrackerCount"),
+  statusTrackerClear: document.querySelector("#statusTrackerClear"),
 };
 
 async function init() {
@@ -45,10 +52,21 @@ async function init() {
   el.connect.addEventListener("click", query);
   el.refresh.addEventListener("click", query);
   el.scan.addEventListener("click", scan);
+  el.statusTracking.checked = state.statusTracking;
+  el.statusTracking.addEventListener("change", () => {
+    state.statusTracking = el.statusTracking.checked;
+    localStorage.setItem("dax88-status-tracking", state.statusTracking ? "1" : "0");
+    renderStatusTracker();
+  });
+  el.statusTrackerClear.addEventListener("click", () => {
+    state.statusLog = [];
+    renderStatusTracker();
+  });
   el.host.addEventListener("keydown", (event) => {
     if (event.key === "Enter") query();
   });
   renderMapping();
+  renderStatusTracker();
 }
 
 function setMessage(text, error = false) {
@@ -104,6 +122,7 @@ async function query() {
     state.generation = payload.generation;
     state.pendingEvent = null;
     state.lastStatusData = cloneState(payload.state);
+    appendStatusFrame(payload, "connect");
     localStorage.setItem("dax88-host", host);
     startStatePoll();
     render();
@@ -146,6 +165,7 @@ async function refreshSubscriptionState() {
       state.generation = payload.generation;
       state.data = payload.state;
       state.snapshot = payload;
+      appendStatusFrame(payload, "push");
       render();
 
       if (payload.last_unknown && payload.last_unknown.raw_payload_hex !== state.lastUnknownPayload) {
@@ -208,6 +228,60 @@ function renderScanResults(devices) {
   }
 }
 
+function appendStatusFrame(payload, source) {
+  const update = payload.last_update || {};
+  if (!state.statusTracking || update.type !== "status" || !payload.state) return;
+  const entry = {
+    at: new Date().toLocaleTimeString(),
+    source,
+    generation: payload.generation,
+    raw: update.raw_payload_hex || "",
+    interpretation: summarizeStatus(payload.state),
+  };
+  state.statusLog.unshift(entry);
+  state.statusLog = state.statusLog.slice(0, 100);
+  renderStatusTracker();
+}
+
+function summarizeStatus(data) {
+  return (data.zones || []).map((zone) => ({
+    zone: zone.zone,
+    name: zone.name,
+    source: zone.source,
+    volume: zone.volume,
+    treble: zone.treble,
+    bass: zone.bass,
+    balance: zone.balance,
+    power_on: zone.power_on,
+    muted: zone.muted,
+    raw: {
+      source: zone.source_raw,
+      volume: zone.volume_raw,
+      treble: zone.treble_raw,
+      bass: zone.bass_raw,
+      balance: zone.balance_raw,
+      power: zone.power_raw,
+      mute: zone.mute_raw,
+    },
+  }));
+}
+
+function renderStatusTracker() {
+  el.statusTrackerPanel.classList.toggle("hidden", !state.statusTracking);
+  el.statusTrackerCount.textContent = `${state.statusLog.length} frame${state.statusLog.length === 1 ? "" : "s"}`;
+  if (!state.statusLog.length) {
+    el.statusTrackerLog.textContent = "No status frames captured yet.";
+    return;
+  }
+  el.statusTrackerLog.textContent = state.statusLog.map(formatStatusEntry).join("\n\n");
+}
+
+function formatStatusEntry(entry) {
+  const zones = entry.interpretation.map((zone) => (
+    `  Z${zone.zone} ${zone.name}: power=${zone.power_on ? "on" : "off"} mute=${zone.muted ? "on" : "off"} src=${zone.source} vol=${zone.volume} tr=${zone.treble} bs=${zone.bass} bal=${zone.balance} raw=[src:${zone.raw.source} vol:${zone.raw.volume} tr:${zone.raw.treble} bs:${zone.raw.bass} bal:${zone.raw.balance} pwr:${zone.raw.power} mute:${zone.raw.mute}]`
+  )).join("\n");
+  return `[${entry.at}] ${entry.source} generation ${entry.generation}\nActual status bytes received:\n  ${entry.raw || "(none)"}\nOur interpretation:\n${zones}`;
+}
 function render() {
   const data = state.data;
   el.statusDot.classList.toggle("online", Boolean(data));
