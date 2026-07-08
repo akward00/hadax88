@@ -153,8 +153,9 @@ function render() {
 
   if (!data?.zones?.length) return;
 
+  const claimed = claimedStatusOwners();
   for (let zoneNum = 1; zoneNum <= data.zones.length; zoneNum += 1) {
-    const zone = logicalZone(data, zoneNum);
+    const zone = logicalZone(data, zoneNum, claimed);
     const card = document.createElement("article");
     const expanded = state.expanded.has(zone.zone);
     card.className = `zone ${expanded ? "" : "collapsed"}`;
@@ -164,8 +165,19 @@ function render() {
   }
 }
 
-function logicalZone(data, logicalZoneNumber) {
-  const statusSlot = Number(state.statusMap[String(logicalZoneNumber)] || logicalZoneNumber);
+function claimedStatusOwners() {
+  const claimed = {};
+  for (const [logical, slot] of Object.entries(state.statusMap)) {
+    claimed[String(slot)] = Number(logical);
+  }
+  return claimed;
+}
+
+function logicalZone(data, logicalZoneNumber, claimed) {
+  const explicitSlot = state.statusMap[String(logicalZoneNumber)];
+  const defaultSlotClaimedBy = claimed[String(logicalZoneNumber)];
+  const hasConflict = !explicitSlot && defaultSlotClaimedBy && defaultSlotClaimedBy !== logicalZoneNumber;
+  const statusSlot = Number(explicitSlot || logicalZoneNumber);
   const status = data.zones.find((zone) => zone.zone === statusSlot) || data.zones[logicalZoneNumber - 1];
   const zoneName = data.config?.zones?.[logicalZoneNumber - 1] || `Zone ${logicalZoneNumber}`;
   return {
@@ -173,6 +185,8 @@ function logicalZone(data, logicalZoneNumber) {
     zone: logicalZoneNumber,
     name: zoneName,
     status_slot: status?.zone || logicalZoneNumber,
+    power_known: !hasConflict,
+    status_conflict: hasConflict ? `Status slot ${logicalZoneNumber} is claimed by zone ${defaultSlotClaimedBy}; this zone still needs calibration.` : "",
   };
 }
 
@@ -191,13 +205,14 @@ function zoneTemplate(zone, sources, expanded) {
     <div class="zone-body">
       <div class="zone-main">
         <select data-command="source">${sourceOptions}</select>
-        <button class="toggle ${zone.power_on ? "on" : ""}" type="button" data-command="power" title="Power"></button>
+        <button class="toggle ${zone.power_known && zone.power_on ? "on" : ""}" type="button" data-command="power" title="Power"></button>
         <button class="mute" type="button" data-command="mute" title="Mute">${zone.muted ? "&#128263;" : "&#128264;"}</button>
       </div>
       <div class="power-row">
-        <button type="button" class="${zone.power_on ? "active" : ""}" data-power-value="true">On</button>
-        <button type="button" class="${!zone.power_on ? "active" : ""}" data-power-value="false">Off</button>
+        <button type="button" class="${zone.power_known && zone.power_on ? "active" : ""}" data-power-value="true">On</button>
+        <button type="button" class="${zone.power_known && !zone.power_on ? "active" : ""}" data-power-value="false">Off</button>
       </div>
+      ${zone.status_conflict ? `<div class="slot-note">${escapeHtml(zone.status_conflict)}</div>` : ""}
       ${zone.status_slot !== zone.zone ? `<div class="slot-note">Showing status slot ${zone.status_slot}; commands still send zone ${zone.zone}.</div>` : ""}
       ${slider("volume", "Volume", zone.volume, 0, 38)}
       <div class="advanced">
