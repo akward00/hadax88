@@ -195,34 +195,40 @@ Payload type:
 After 82 0c, the first 56 bytes appear to be seven groups of eight bytes. The
 current parser interprets them as:
 
-Group  Index range  Meaning             Display conversion
------  -----------  -------             ------------------
+Group  Index range  Current guess      Display conversion
+-----  -----------  -------------      ------------------
 0      0..7         source_raw          source number 1..8
 1      8..15        volume_raw          display = raw - 1
 2      16..23       treble_raw          display = raw - 13
 3      24..31       bass_raw            display = raw - 13
 4      32..39       balance_raw         display = (raw - 1) / 3 when valid
-5      40..47       power_raw           01 = off, 02 = on
-6      48..55       mute_raw            01 = unmuted, 02 = muted
+5      40..47       power_raw           guessed 01 = off, 02 = on
+6      48..55       mute_raw            guessed 01 = unmuted, 02 = muted
 
 Known problem with status frames
 ================================
 
-The group interpretation appears broadly right, but slot-to-zone mapping is not
-fully solved.
+The group interpretation is not proven. Earlier we thought the field groups were
+broadly right and only the slot-to-zone mapping was wrong. A later startup test
+showed all zones physically off while the parsed startup status still produced
+power_raw = 02 for raw slot 1. That means at least one of these assumptions is
+wrong: the field offset, the power value meaning, the status-frame type, or the
+slot-to-zone mapping.
 
-For example, the raw power group can show slot 1 as on even when Matrio says the
-logical Basement zone is off. We also observed Office power events where the
-immediate pushed event correctly identified Office, then a later status block
-appeared to update a different raw slot.
+For example, the raw power group can show slot 1 as on even when Matrio and the
+real system say all logical zones are off. We also observed Office power events
+where the immediate pushed event correctly identified Office, then a later status
+block appeared to update a different raw slot.
 
 What we know:
 
 - Command zone masks are logical and work as expected.
 - Event frames identify the logical zone correctly.
-- Status frame groups identify fields reasonably well.
-- The raw slot inside a status group may not always equal the logical zone number.
-- This mismatch has been most visible for power.
+- Status frames contain repeatable structured data, but our field interpretation
+  is not yet authoritative.
+- The raw slot inside a status group may not equal the logical zone number.
+- Power is specifically not solved: a startup all-off state has been observed with
+  bytes that our current parser would interpret as a powered-on raw slot.
 
 Current debug GUI workaround:
 
@@ -280,10 +286,12 @@ Reasonable confidence:
 - Command frame construction is understood for source, power, mute, volume, bass,
   treble, and balance.
 - Event frames identify logical command changes.
-- The status block field groups are mostly understood.
+- Status block framing is detected, but field meanings and slot mapping are not
+  yet fully understood.
 
 Not yet fully understood:
 
+- The authoritative meaning of each status group and byte offset.
 - The authoritative mapping from status slots to logical zones for each field.
 - Whether status slot order can vary by field, by firmware, by grouping, or by
   amplifier/expansion topology.
@@ -294,7 +302,8 @@ Not yet fully understood:
 Recommended next debugging steps
 ================================
 
-1. Start with all zones off and record a baseline status block.
+1. Start with all zones physically off and record a baseline status block. Mark
+   this as ground truth: every logical zone is off, regardless of parsed bytes.
 2. Turn on exactly one logical zone from Matrio.
 3. Save the event frame and the next status frame.
 4. Repeat for every zone.
