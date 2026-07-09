@@ -317,10 +317,8 @@ function render() {
   renderMapping();
 
   if (!data?.zones?.length) return;
-
-  const claimed = claimedStatusOwners("power");
   for (let zoneNum = 1; zoneNum <= data.zones.length; zoneNum += 1) {
-    const zone = logicalZone(data, zoneNum, claimed);
+    const zone = logicalZone(data, zoneNum);
     const card = document.createElement("article");
     const expanded = state.expanded.has(zone.zone);
     card.className = `zone ${expanded ? "" : "collapsed"}`;
@@ -343,7 +341,7 @@ function statusFor(data, logicalZoneNumber, command) {
   return data.zones.find((zone) => zone.zone === statusSlot) || data.zones[logicalZoneNumber - 1];
 }
 
-function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
+function logicalZone(data, logicalZoneNumber) {
   const base = data.zones[logicalZoneNumber - 1];
   const source = statusFor(data, logicalZoneNumber, "source");
   const volume = statusFor(data, logicalZoneNumber, "volume");
@@ -351,11 +349,7 @@ function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
   const treble = statusFor(data, logicalZoneNumber, "treble");
   const balance = statusFor(data, logicalZoneNumber, "balance");
   const mute = statusFor(data, logicalZoneNumber, "mute");
-  const explicitPowerSlot = state.statusMap.power?.[String(logicalZoneNumber)];
-  const powerKnown = explicitPowerSlot != null;
-  const power = statusFor(data, logicalZoneNumber, "power");
-  const defaultPowerSlotClaimedBy = claimedPowerSlots[String(logicalZoneNumber)];
-  const hasPowerConflict = !powerKnown && defaultPowerSlotClaimedBy && defaultPowerSlotClaimedBy !== logicalZoneNumber;
+  const power = base;
   const zoneName = data.config?.zones?.[logicalZoneNumber - 1] || `Zone ${logicalZoneNumber}`;
 
   return {
@@ -378,8 +372,8 @@ function logicalZone(data, logicalZoneNumber, claimedPowerSlots) {
     power_on: power.power_on,
     power_raw: power.power_raw,
     power_status_slot: power.zone,
-    power_known: powerKnown && !hasPowerConflict,
-    status_conflict: !powerKnown ? "Power status is uncalibrated; use On/Off until this zone is observed changing." : (hasPowerConflict ? `Power status slot ${logicalZoneNumber} is claimed by zone ${defaultPowerSlotClaimedBy}; this zone still needs calibration.` : ""),
+    power_known: true,
+    status_conflict: "",
   };
 }
 
