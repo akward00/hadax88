@@ -24,13 +24,14 @@ COMMANDS = {
 COMMAND_NAMES = {value: key for key, value in COMMANDS.items()}
 
 MAX_VOLUME = 38
-STATUS_MIN_LEN = 50
+STATUS_MIN_LEN = 58
 STATUS_SOURCE_OFFSET = 0
 STATUS_VOLUME_OFFSET = 8
 STATUS_TREBLE_OFFSET = 16
 STATUS_BASS_OFFSET = 24
 STATUS_BALANCE_OFFSET = 32
 STATUS_POWER_OFFSET = 42
+STATUS_MUTE_OFFSET = 50
 
 
 @dataclass(slots=True)
@@ -385,6 +386,7 @@ def parse_state(data: bytes) -> DaxState:
         bass_status = status[STATUS_BASS_OFFSET : STATUS_BASS_OFFSET + 8]
         balance_status = status[STATUS_BALANCE_OFFSET : STATUS_BALANCE_OFFSET + 8]
         power_status = status[STATUS_POWER_OFFSET : STATUS_POWER_OFFSET + 8]
+        mute_status = status[STATUS_MUTE_OFFSET : STATUS_MUTE_OFFSET + 8]
         zone_names = config.zones if config else []
         sources = config.sources if config else []
         for index in range(8):
@@ -401,14 +403,14 @@ def parse_state(data: bytes) -> DaxState:
                     bass=raw_to_tone(bass_status[index]),
                     balance=raw_to_balance(balance_status[index]),
                     power_on=power_status[index] == 0x02,
-                    muted=False,
+                    muted=mute_status[index] == 0x02,
                     source_raw=source_status[index],
                     volume_raw=volume_status[index],
                     treble_raw=treble_status[index],
                     bass_raw=bass_status[index],
                     balance_raw=balance_status[index],
                     power_raw=power_status[index],
-                    mute_raw=0,
+                    mute_raw=mute_status[index],
                 )
             )
     return DaxState(

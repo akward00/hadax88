@@ -22,13 +22,14 @@ from .const import (
     TERMINATOR,
 )
 
-STATUS_MIN_LEN = 50
+STATUS_MIN_LEN = 58
 STATUS_SOURCE_OFFSET = 0
 STATUS_VOLUME_OFFSET = 8
 STATUS_TREBLE_OFFSET = 16
 STATUS_BASS_OFFSET = 24
 STATUS_BALANCE_OFFSET = 32
 STATUS_POWER_OFFSET = 42
+STATUS_MUTE_OFFSET = 50
 
 
 @dataclass(slots=True)
@@ -250,6 +251,7 @@ def parse_zone_statuses(status: bytes, config: DaxConfig | None) -> list[ZoneSta
     bass_status = status[STATUS_BASS_OFFSET : STATUS_BASS_OFFSET + 8]
     balance_status = status[STATUS_BALANCE_OFFSET : STATUS_BALANCE_OFFSET + 8]
     power_status = status[STATUS_POWER_OFFSET : STATUS_POWER_OFFSET + 8]
+    mute_status = status[STATUS_MUTE_OFFSET : STATUS_MUTE_OFFSET + 8]
     zone_names = config.zones if config else []
     sources = config.sources if config else []
 
@@ -270,9 +272,9 @@ def parse_zone_statuses(status: bytes, config: DaxConfig | None) -> list[ZoneSta
                 bass=raw_to_tone(bass_status[index]),
                 balance=balance if balance is not None else CENTER_BALANCE,
                 power_on=power_raw == POWER_ON,
-                muted=False,
+                muted=mute_raw == MUTE_ON,
                 power_raw=power_raw,
-                mute_raw=0,
+                mute_raw=mute_raw,
             )
         )
     return out
