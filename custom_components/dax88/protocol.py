@@ -22,6 +22,14 @@ from .const import (
     TERMINATOR,
 )
 
+STATUS_MIN_LEN = 50
+STATUS_SOURCE_OFFSET = 0
+STATUS_VOLUME_OFFSET = 8
+STATUS_TREBLE_OFFSET = 16
+STATUS_BASS_OFFSET = 24
+STATUS_BALANCE_OFFSET = 32
+STATUS_POWER_OFFSET = 42
+
 
 @dataclass(slots=True)
 class DaxConfig:
@@ -231,40 +239,43 @@ def parse_state(data: bytes) -> DaxState:
 
 
 def parse_zone_statuses(status: bytes, config: DaxConfig | None) -> list[ZoneStatus]:
-    """Parse the first 56 status bytes into eight zone states."""
+    """Parse assumed status fields into eight zone states."""
 
-    if len(status) < 56:
+    if len(status) < STATUS_MIN_LEN:
         return []
 
-    groups = [list(status[index : index + 8]) for index in range(0, 56, 8)]
+    source_status = status[STATUS_SOURCE_OFFSET : STATUS_SOURCE_OFFSET + 8]
+    volume_status = status[STATUS_VOLUME_OFFSET : STATUS_VOLUME_OFFSET + 8]
+    treble_status = status[STATUS_TREBLE_OFFSET : STATUS_TREBLE_OFFSET + 8]
+    bass_status = status[STATUS_BASS_OFFSET : STATUS_BASS_OFFSET + 8]
+    balance_status = status[STATUS_BALANCE_OFFSET : STATUS_BALANCE_OFFSET + 8]
+    power_status = status[STATUS_POWER_OFFSET : STATUS_POWER_OFFSET + 8]
     zone_names = config.zones if config else []
     sources = config.sources if config else []
 
     out: list[ZoneStatus] = []
     for index in range(8):
         zone = index + 1
-        source = groups[0][index]
-        power_raw = groups[5][index]
-        mute_raw = groups[6][index]
-        balance = raw_to_balance(groups[4][index])
+        source = source_status[index]
+        power_raw = power_status[index]
+        balance = raw_to_balance(balance_status[index])
         out.append(
             ZoneStatus(
                 zone=zone,
                 name=zone_name(zone_names, zone),
                 source=source,
                 source_name=source_name(sources, source),
-                volume=raw_to_volume(groups[1][index]),
-                treble=raw_to_tone(groups[2][index]),
-                bass=raw_to_tone(groups[3][index]),
+                volume=raw_to_volume(volume_status[index]),
+                treble=raw_to_tone(treble_status[index]),
+                bass=raw_to_tone(bass_status[index]),
                 balance=balance if balance is not None else CENTER_BALANCE,
                 power_on=power_raw == POWER_ON,
-                muted=mute_raw == MUTE_ON,
+                muted=False,
                 power_raw=power_raw,
-                mute_raw=mute_raw,
+                mute_raw=0,
             )
         )
     return out
-
 
 def command_id(command: str) -> int:
     """Return the protocol command id."""

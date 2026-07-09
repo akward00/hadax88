@@ -24,6 +24,13 @@ COMMANDS = {
 COMMAND_NAMES = {value: key for key, value in COMMANDS.items()}
 
 MAX_VOLUME = 38
+STATUS_MIN_LEN = 50
+STATUS_SOURCE_OFFSET = 0
+STATUS_VOLUME_OFFSET = 8
+STATUS_TREBLE_OFFSET = 16
+STATUS_BASS_OFFSET = 24
+STATUS_BALANCE_OFFSET = 32
+STATUS_POWER_OFFSET = 42
 
 
 @dataclass(slots=True)
@@ -371,35 +378,39 @@ def parse_state(data: bytes) -> DaxState:
         status = status or parse_status_payload(payload)
 
     zones: list[ZoneStatus] = []
-    if status and len(status) >= 56:
-        groups = [list(status[index : index + 8]) for index in range(0, 56, 8)]
+    if status and len(status) >= STATUS_MIN_LEN:
+        source_status = status[STATUS_SOURCE_OFFSET : STATUS_SOURCE_OFFSET + 8]
+        volume_status = status[STATUS_VOLUME_OFFSET : STATUS_VOLUME_OFFSET + 8]
+        treble_status = status[STATUS_TREBLE_OFFSET : STATUS_TREBLE_OFFSET + 8]
+        bass_status = status[STATUS_BASS_OFFSET : STATUS_BASS_OFFSET + 8]
+        balance_status = status[STATUS_BALANCE_OFFSET : STATUS_BALANCE_OFFSET + 8]
+        power_status = status[STATUS_POWER_OFFSET : STATUS_POWER_OFFSET + 8]
         zone_names = config.zones if config else []
         sources = config.sources if config else []
         for index in range(8):
             zone = index + 1
-            source = groups[0][index]
+            source = source_status[index]
             zones.append(
                 ZoneStatus(
                     zone=zone,
                     name=safe_name(zone_names, zone, f"Zone {zone}"),
                     source=source,
                     source_name=safe_name(sources, source, f"Source {source}"),
-                    volume=raw_to_volume(groups[1][index]),
-                    treble=raw_to_tone(groups[2][index]),
-                    bass=raw_to_tone(groups[3][index]),
-                    balance=raw_to_balance(groups[4][index]),
-                    power_on=groups[5][index] == 0x02,
-                    muted=groups[6][index] == 0x02,
-                    source_raw=groups[0][index],
-                    volume_raw=groups[1][index],
-                    treble_raw=groups[2][index],
-                    bass_raw=groups[3][index],
-                    balance_raw=groups[4][index],
-                    power_raw=groups[5][index],
-                    mute_raw=groups[6][index],
+                    volume=raw_to_volume(volume_status[index]),
+                    treble=raw_to_tone(treble_status[index]),
+                    bass=raw_to_tone(bass_status[index]),
+                    balance=raw_to_balance(balance_status[index]),
+                    power_on=power_status[index] == 0x02,
+                    muted=False,
+                    source_raw=source_status[index],
+                    volume_raw=volume_status[index],
+                    treble_raw=treble_status[index],
+                    bass_raw=bass_status[index],
+                    balance_raw=balance_status[index],
+                    power_raw=power_status[index],
+                    mute_raw=0,
                 )
             )
-
     return DaxState(
         device_name=config.device_name if config else None,
         config=config,
