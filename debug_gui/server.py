@@ -106,6 +106,22 @@ class DaxSubscription:
                 "state": self.state.to_dict() if self.state else None,
             }
 
+    def wait_for_event(self, generation: int, command: str, zone: int, timeout: float = 0.8) -> dict:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            snap = self.snapshot()
+            update = snap.get("last_update") or {}
+            event = update.get("event") or {}
+            if (
+                snap.get("generation", 0) > generation
+                and update.get("type") == "event"
+                and event.get("command") == command
+                and zone in event.get("zones", [])
+            ):
+                return snap
+            time.sleep(0.02)
+        return self.snapshot()
+
     def _run(self) -> None:
         backoff = 0.5
         while not self.stop_event.is_set():
@@ -414,11 +430,13 @@ class DaxDebugHandler(SimpleHTTPRequestHandler):
             if command not in {"power", "mute"}:
                 value = int(value)
             session = SUBSCRIPTIONS.get(host, port)
+            before_generation = session.snapshot()["generation"]
             sent_hex = session.send(zone, command, value)
+            snap = session.wait_for_event(before_generation, command, zone)
         except Exception as err:
             self._json({"ok": False, "error": str(err)}, HTTPStatus.BAD_REQUEST)
             return
-        self._json({"ok": True, "sent_hex": sent_hex, **session.snapshot()})
+        self._json({"ok": True, "sent_hex": sent_hex, **snap})
 
     def _handle_scan(self, parsed) -> None:
         qs = parse_qs(parsed.query)

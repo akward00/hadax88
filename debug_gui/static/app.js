@@ -513,7 +513,27 @@ async function send(zone, command, value) {
     });
     const payload = await res.json();
     if (!payload.ok) throw new Error(payload.error || "Command failed");
-    setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+    const update = payload.last_update || {};
+    if (payload.state) {
+      if (update.type === "event" && update.event?.zones?.length) {
+        state.pendingEvent = {
+          event: update.event,
+          baseline: cloneState(state.lastStatusData || state.data),
+        };
+      } else if (update.type === "status") {
+        state.lastStatusData = cloneState(payload.state);
+      }
+      state.generation = payload.generation;
+      state.data = payload.state;
+      state.snapshot = payload;
+      appendReceivedFrames(payload, "send");
+      render();
+    }
+    if (update.type === "event" && update.event) {
+      setMessage(`Echoed ${update.event.command} event for zone ${update.event.zones.join(",") || zone}.`);
+    } else {
+      setMessage(`Sent ${command} to zone ${zone}; waiting for pushed confirmation.`);
+    }
   } catch (err) {
     setMessage(err.message, true);
   } finally {
