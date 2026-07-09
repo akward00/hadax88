@@ -70,12 +70,17 @@ class Dax88ZoneNumber(CoordinatorEntity[Dax88Coordinator], NumberEntity):
         self._entry = entry
         self._zone = zone
         self._description = description
-        status = coordinator.zone(zone)
-        zone_name = status.name if status else f"Zone {zone}"
-        self._attr_name = f"{zone_name} {description.name}"
         self._attr_unique_id = f"{entry.entry_id}_zone_{zone}_{description.key}"
         self._attr_native_min_value = description.minimum
         self._attr_native_max_value = description.maximum
+
+    @property
+    def name(self) -> str:
+        """Return the current zone control name."""
+
+        status = self.coordinator.zone(self._zone)
+        zone_name = status.name if status else f"Zone {self._zone}"
+        return f"{zone_name} {self._description.name}"
 
     @property
     def device_info(self) -> dict:

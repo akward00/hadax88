@@ -45,10 +45,14 @@ class Dax88ZoneMediaPlayer(CoordinatorEntity[Dax88Coordinator], MediaPlayerEntit
         super().__init__(coordinator)
         self._entry = entry
         self._zone = zone
-        initial = coordinator.zone(zone)
-        name = initial.name if initial else f"Zone {zone}"
-        self._attr_name = name
         self._attr_unique_id = f"{entry.entry_id}_zone_{zone}"
+
+    @property
+    def name(self) -> str:
+        """Return the current zone name."""
+
+        status = self._status
+        return status.name if status else f"Zone {self._zone}"
 
     @property
     def device_info(self) -> dict:

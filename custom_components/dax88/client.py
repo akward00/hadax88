@@ -208,7 +208,7 @@ class Dax88Client:
                 _LOGGER.debug("Ignoring unhandled DAX88 payload from %s: %s", self.host, payload.hex(" "))
                 continue
             self.state = new_state
-            if new_state.zones:
+            if new_state.config is not None and new_state.zones:
                 self._ready_event.set()
                 if self._state_callback is not None:
                     self._state_callback(new_state)
