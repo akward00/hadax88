@@ -107,23 +107,23 @@ class Dax88ZoneMediaPlayer(CoordinatorEntity[Dax88Coordinator], MediaPlayerEntit
     async def async_turn_on(self) -> None:
         """Turn the zone on."""
 
-        await self.coordinator.async_send_and_refresh(self._zone, "power", True)
+        await self.coordinator.async_send(self._zone, "power", True)
 
     async def async_turn_off(self) -> None:
         """Turn the zone off."""
 
-        await self.coordinator.async_send_and_refresh(self._zone, "power", False)
+        await self.coordinator.async_send(self._zone, "power", False)
 
     async def async_mute_volume(self, mute: bool) -> None:
         """Mute or unmute the zone."""
 
-        await self.coordinator.async_send_and_refresh(self._zone, "mute", mute)
+        await self.coordinator.async_send(self._zone, "mute", mute)
 
     async def async_set_volume_level(self, volume: float) -> None:
         """Set volume from Home Assistant 0.0..1.0."""
 
         display_volume = round(max(0.0, min(1.0, volume)) * MAX_VOLUME)
-        await self.coordinator.async_send_and_refresh(self._zone, "volume", display_volume)
+        await self.coordinator.async_send(self._zone, "volume", display_volume)
 
     async def async_volume_up(self) -> None:
         """Raise zone volume by one display step."""
@@ -131,7 +131,7 @@ class Dax88ZoneMediaPlayer(CoordinatorEntity[Dax88Coordinator], MediaPlayerEntit
         status = self._status
         if status is None:
             return
-        await self.coordinator.async_send_and_refresh(self._zone, "volume", min(MAX_VOLUME, status.volume + 1))
+        await self.coordinator.async_send(self._zone, "volume", min(MAX_VOLUME, status.volume + 1))
 
     async def async_volume_down(self) -> None:
         """Lower zone volume by one display step."""
@@ -139,7 +139,7 @@ class Dax88ZoneMediaPlayer(CoordinatorEntity[Dax88Coordinator], MediaPlayerEntit
         status = self._status
         if status is None:
             return
-        await self.coordinator.async_send_and_refresh(self._zone, "volume", max(0, status.volume - 1))
+        await self.coordinator.async_send(self._zone, "volume", max(0, status.volume - 1))
 
     async def async_select_source(self, source: str) -> None:
         """Select a source by name."""
@@ -147,4 +147,4 @@ class Dax88ZoneMediaPlayer(CoordinatorEntity[Dax88Coordinator], MediaPlayerEntit
         config = self.coordinator.data.config if self.coordinator.data else None
         if config is None or source not in config.sources:
             return
-        await self.coordinator.async_send_and_refresh(self._zone, "source", config.sources.index(source) + 1)
+        await self.coordinator.async_send(self._zone, "source", config.sources.index(source) + 1)

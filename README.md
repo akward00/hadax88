@@ -1,12 +1,39 @@
 # DAX88 Home Assistant custom integration
 
-This workspace now includes a Home Assistant custom integration for the Dayton Audio DAX88 matrix amplifier:
+Home Assistant custom integration for the Dayton Audio DAX88 matrix amplifier using the reverse-engineered Matrio TCP protocol on port `8899`.
+
+The integration lives in:
 
 ```text
 custom_components/dax88
 ```
 
-To install it, copy that `dax88` directory into Home Assistant as:
+It is structured for manual custom-component installs and HACS custom repository installs.
+
+## HACS install
+
+1. In HACS, open **Integrations**.
+2. Select the three-dot menu, then **Custom repositories**.
+3. Add this repository URL:
+
+```text
+https://github.com/akward00/hadax88
+```
+
+4. Set the category to **Integration**.
+5. Install **Dayton Audio DAX88**.
+6. Restart Home Assistant.
+7. Add **Dayton Audio DAX88** from **Settings > Devices & services**.
+
+## Manual install
+
+Copy this directory:
+
+```text
+custom_components/dax88
+```
+
+into Home Assistant as:
 
 ```text
 /config/custom_components/dax88

@@ -36,4 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: Dax88ConfigEntry) -> boo
 async def async_unload_entry(hass: HomeAssistant, entry: Dax88ConfigEntry) -> bool:
     """Unload a DAX88 config entry."""
 
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.async_shutdown()
+    return unload_ok

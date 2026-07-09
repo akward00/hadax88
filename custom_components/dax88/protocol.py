@@ -1,8 +1,8 @@
-"""DAX88 TCP frame building and parsing."""
+"""DAX88 TCP frame building, parsing, and state reduction."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import struct
 
 from .const import (
@@ -31,6 +31,8 @@ STATUS_BALANCE_OFFSET = 32
 STATUS_POWER_OFFSET = 42
 STATUS_MUTE_OFFSET = 50
 
+COMMAND_NAMES = {value: key for key, value in COMMANDS.items()}
+
 
 @dataclass(slots=True)
 class DaxConfig:
@@ -56,6 +58,11 @@ class ZoneStatus:
     balance: int | None
     power_on: bool
     muted: bool
+    source_raw: int
+    volume_raw: int
+    treble_raw: int
+    bass_raw: int
+    balance_raw: int
     power_raw: int
     mute_raw: int
 
@@ -67,6 +74,17 @@ class DaxState:
     device_name: str | None
     config: DaxConfig | None
     zones: list[ZoneStatus]
+
+
+@dataclass(slots=True)
+class DaxEvent:
+    """A push command/event frame from the DAX88 socket."""
+
+    command: str
+    command_raw: int
+    value: int | bool
+    value_raw: int
+    zones: list[int]
 
 
 def wrap_payload(payload: bytes) -> bytes:
@@ -181,6 +199,29 @@ def extract_payloads(data: bytes) -> list[bytes]:
     return payloads
 
 
+def extract_first_frame(buffer: bytearray) -> bytes | None:
+    """Pop one valid wrapped frame from a mutable stream buffer."""
+
+    start = bytes(buffer).find(MAGIC)
+    if start < 0:
+        if len(buffer) > len(MAGIC):
+            del buffer[: -len(MAGIC)]
+        return None
+    if start > 0:
+        del buffer[:start]
+    if len(buffer) < 20:
+        return None
+
+    payload_len = struct.unpack("<I", buffer[4:8])[0]
+    total = 20 + payload_len
+    if len(buffer) < total:
+        return None
+
+    frame = bytes(buffer[:total])
+    del buffer[:total]
+    return frame
+
+
 def parse_config(payload: bytes) -> DaxConfig | None:
     """Parse a config/name payload."""
 
@@ -221,22 +262,41 @@ def parse_status_payload(payload: bytes) -> bytes | None:
     return raw
 
 
+def parse_event_payload(payload: bytes) -> DaxEvent | None:
+    """Parse a command echo or unsolicited zone event payload."""
+
+    if not payload.startswith(PREFIX + bytes([0x82])):
+        return None
+    body = payload[len(PREFIX) + 1 :]
+    if len(body) < 10:
+        return None
+
+    command_raw = body[0]
+    if command_raw not in COMMAND_NAMES:
+        return None
+    value_raw = body[1]
+    mask = body[2:10]
+    zones = [index + 1 for index, value in enumerate(mask) if value == 0x01]
+    if not zones:
+        return None
+
+    command = COMMAND_NAMES[command_raw]
+    return DaxEvent(
+        command=command,
+        command_raw=command_raw,
+        value=raw_to_display(command, value_raw),
+        value_raw=value_raw,
+        zones=zones,
+    )
+
+
 def parse_state(data: bytes) -> DaxState:
     """Parse query response bytes into a DAX88 state."""
 
-    config: DaxConfig | None = None
-    status: bytes | None = None
-
+    state = DaxState(device_name=None, config=None, zones=[])
     for payload in extract_payloads(data):
-        config = config or parse_config(payload)
-        status = status or parse_status_payload(payload)
-
-    zones = parse_zone_statuses(status, config) if status else []
-    return DaxState(
-        device_name=config.device_name if config else None,
-        config=config,
-        zones=zones,
-    )
+        state = apply_payload(state, payload) or state
+    return state
 
 
 def parse_zone_statuses(status: bytes, config: DaxConfig | None) -> list[ZoneStatus]:
@@ -258,28 +318,145 @@ def parse_zone_statuses(status: bytes, config: DaxConfig | None) -> list[ZoneSta
     out: list[ZoneStatus] = []
     for index in range(8):
         zone = index + 1
-        source = source_status[index]
+        source_raw = source_status[index]
+        volume_raw = volume_status[index]
+        treble_raw = treble_status[index]
+        bass_raw = bass_status[index]
+        balance_raw = balance_status[index]
         power_raw = power_status[index]
-        balance = raw_to_balance(balance_status[index])
+        mute_raw = mute_status[index]
+        balance = raw_to_balance(balance_raw)
         out.append(
             ZoneStatus(
                 zone=zone,
                 name=zone_name(zone_names, zone),
-                source=source,
-                source_name=source_name(sources, source),
-                volume=raw_to_volume(volume_status[index]),
-                treble=raw_to_tone(treble_status[index]),
-                bass=raw_to_tone(bass_status[index]),
+                source=source_raw,
+                source_name=source_name(sources, source_raw),
+                volume=raw_to_volume(volume_raw),
+                treble=raw_to_tone(treble_raw),
+                bass=raw_to_tone(bass_raw),
                 balance=balance if balance is not None else CENTER_BALANCE,
                 power_on=power_raw == POWER_ON,
                 muted=mute_raw == MUTE_ON,
+                source_raw=source_raw,
+                volume_raw=volume_raw,
+                treble_raw=treble_raw,
+                bass_raw=bass_raw,
+                balance_raw=balance_raw,
                 power_raw=power_raw,
                 mute_raw=mute_raw,
             )
         )
     return out
 
+
+def apply_payload(state: DaxState | None, payload: bytes) -> DaxState | None:
+    """Apply one unwrapped payload to a state snapshot."""
+
+    current = state or DaxState(device_name=None, config=None, zones=[])
+
+    config = parse_config(payload)
+    if config is not None:
+        return apply_config(current, config)
+
+    status = parse_status_payload(payload)
+    if status is not None:
+        zones = parse_zone_statuses(status, current.config)
+        if zones:
+            return DaxState(
+                device_name=current.device_name or (current.config.device_name if current.config else None),
+                config=current.config,
+                zones=zones,
+            )
+        return None
+
+    event = parse_event_payload(payload)
+    if event is not None:
+        return apply_event(current, event)
+
+    return None
+
+
+def apply_config(state: DaxState, config: DaxConfig) -> DaxState:
+    """Apply discovered names without discarding current zone values."""
+
+    zones = [_with_config_names(zone, config) for zone in state.zones]
+    return DaxState(device_name=config.device_name, config=config, zones=zones)
+
+
+def apply_event(state: DaxState, event: DaxEvent) -> DaxState | None:
+    """Apply an echoed command or push event to affected zones."""
+
+    if not state.zones:
+        return None
+
+    updated: list[ZoneStatus] = []
+    changed = False
+    for status in state.zones:
+        if status.zone not in event.zones:
+            updated.append(status)
+            continue
+        updated.append(_apply_event_to_zone(status, event, state.config))
+        changed = True
+
+    if not changed:
+        return None
+    return DaxState(device_name=state.device_name, config=state.config, zones=updated)
+
+
+def raw_to_display(command: str, value: int) -> int | bool:
+    """Convert a raw event value into the display value for its command."""
+
+    if command == "power":
+        return value == POWER_ON
+    if command == "mute":
+        return value == MUTE_ON
+    if command == "volume":
+        return raw_to_volume(value)
+    if command in {"bass", "treble"}:
+        return raw_to_tone(value)
+    if command == "balance":
+        return raw_to_balance(value) or CENTER_BALANCE
+    return value
+
+
 def command_id(command: str) -> int:
     """Return the protocol command id."""
 
     return COMMANDS[command]
+
+
+def _with_config_names(status: ZoneStatus, config: DaxConfig) -> ZoneStatus:
+    return replace(
+        status,
+        name=zone_name(config.zones, status.zone),
+        source_name=source_name(config.sources, status.source),
+    )
+
+
+def _apply_event_to_zone(status: ZoneStatus, event: DaxEvent, config: DaxConfig | None) -> ZoneStatus:
+    kwargs: dict[str, int | bool | str | None] = {}
+    if event.command == "power":
+        kwargs["power_raw"] = event.value_raw
+        kwargs["power_on"] = bool(event.value)
+    elif event.command == "mute":
+        kwargs["mute_raw"] = event.value_raw
+        kwargs["muted"] = bool(event.value)
+    elif event.command == "volume":
+        kwargs["volume_raw"] = event.value_raw
+        kwargs["volume"] = int(event.value)
+    elif event.command == "treble":
+        kwargs["treble_raw"] = event.value_raw
+        kwargs["treble"] = int(event.value)
+    elif event.command == "bass":
+        kwargs["bass_raw"] = event.value_raw
+        kwargs["bass"] = int(event.value)
+    elif event.command == "balance":
+        kwargs["balance_raw"] = event.value_raw
+        kwargs["balance"] = int(event.value)
+    elif event.command == "source":
+        source = int(event.value)
+        kwargs["source_raw"] = event.value_raw
+        kwargs["source"] = source
+        kwargs["source_name"] = source_name(config.sources if config else [], source)
+    return replace(status, **kwargs)

@@ -9,15 +9,27 @@ This integration does not use RS-232 and does not use LinkPlay/UPnP for matrix c
 - Config flow setup from the Home Assistant UI.
 - Manual host/IP entry.
 - Optional active subnet scan for TCP `8899`.
+- HACS-ready custom repository structure.
+- Push-based runtime connection using one persistent TCP socket.
 - One `media_player` entity per DAX88 zone.
 - Zone names and source names loaded from the amplifier.
-- Power, mute, volume, source selection, and periodic status polling.
+- Power, mute, volume, source selection, bass, treble, and balance.
 - Number entities for each zone:
   - Bass, `-12..12`
   - Treble, `-12..12`
   - Balance, `0..20`, center `10`
 
 ## Install
+
+### HACS custom repository
+
+1. In HACS, open **Integrations**.
+2. Select the three-dot menu, then **Custom repositories**.
+3. Add `https://github.com/akward00/hadax88` as an **Integration** repository.
+4. Install **Dayton Audio DAX88**.
+5. Restart Home Assistant.
+
+### Manual install
 
 Copy this directory:
 
@@ -44,15 +56,33 @@ Restart Home Assistant.
 
 The integration connects to TCP port `8899`, sends the Matrio query, and uses the response to discover the device name, zone names, source names, and current status.
 
+## Runtime model
+
+After setup, the integration keeps one TCP socket open to the DAX88. State updates are driven by frames received on that socket:
+
+- Config/name frames refresh the device, zone, and source labels.
+- Full status frames refresh all known zone values.
+- Echoed command frames and unsolicited event frames patch affected zones immediately.
+- If the socket drops, the client reconnects and sends the startup query again.
+
+This matches the current debugging finding that the device appears to hold one active socket per remote IP, and that Matrio receives immediate state changes on the main socket.
+
 ## Protocol mappings
 
-- Power: off `0x01`, on `0x02`
-- Mute: unmuted `0x01`, muted `0x02`
-- Volume: Home Assistant `0.0..1.0` maps to DAX88 display `0..38`, then raw `display + 1`
-- Bass and treble: display `-12..12`, raw `display + 13`
-- Balance: display `0..20`, raw `1 + display * 3`
-- Source: raw source number, `1..8`
+TCP status frame `0x82 0x0c` currently maps as follows, using data offsets after `MCU+PAS+ 82 0c` and before the trailer:
 
-## Notes
+- `0..7`: source raw, zones 1..8
+- `8..15`: volume raw, display `raw - 1`
+- `16..23`: treble raw, display `raw - 13`
+- `24..31`: bass raw, display `raw - 13`
+- `32..39`: balance raw, display `(raw - 1) / 3` when valid
+- `40..41`: unknown
+- `42..49`: power raw, `0x01` off and `0x02` on
+- `50..57`: mute raw, `0x01` unmuted and `0x02` muted
+- `58..61`: unknown tail
 
-The integration polls status every 12 seconds using a Home Assistant `DataUpdateCoordinator`. After a command is sent, it immediately requests a refresh so the UI follows the amplifier state closely.
+Command/event frames use a command byte, value byte, and eight zone mask bytes. Mask byte `0x01` means the event applies to that zone; `0x02` means it does not.
+
+## Known open protocol questions
+
+The RS-232 manual exposes PA, DT, and keypad status values that have not yet been confidently identified in the TCP status block. PA is probably related to the announcement input. DT may be a do-not-disturb style feature, but that is still an assumption.

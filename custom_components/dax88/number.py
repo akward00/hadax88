@@ -102,4 +102,4 @@ class Dax88ZoneNumber(CoordinatorEntity[Dax88Coordinator], NumberEntity):
 
         int_value = round(value)
         int_value = max(self._description.minimum, min(self._description.maximum, int_value))
-        await self.coordinator.async_send_and_refresh(self._zone, self._description.key, int_value)
+        await self.coordinator.async_send(self._zone, self._description.key, int_value)

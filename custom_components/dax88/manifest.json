@@ -1,10 +1,12 @@
 {
   "domain": "dax88",
   "name": "Dayton Audio DAX88",
-  "codeowners": [],
+  "codeowners": ["@akward00"],
   "config_flow": true,
   "documentation": "https://github.com/akward00/hadax88",
-  "iot_class": "local_polling",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/akward00/hadax88/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
