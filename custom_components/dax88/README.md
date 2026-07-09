@@ -12,6 +12,8 @@ This integration does not use RS-232 and does not use LinkPlay/UPnP for matrix c
 - HACS-ready custom repository structure.
 - Push-based runtime connection using one persistent TCP socket.
 - One `media_player` entity per DAX88 zone.
+- One connectivity `binary_sensor` for the persistent DAX88 socket.
+- Home Assistant diagnostics download with parsed state and recent raw DAX88 payloads.
 - Zone names and source names loaded from the amplifier.
 - Power, mute, volume, source selection, bass, treble, and balance.
 - Number entities for each zone:
@@ -55,6 +57,21 @@ Restart Home Assistant.
    - **Scan a subnet** and provide a subnet such as `192.168.6.0/24`.
 
 The integration connects to TCP port `8899`, sends the Matrio query, and uses the response to discover the device name, zone names, source names, and current status.
+
+## Status
+
+Core controls have been tested on a Dayton Audio DAX88:
+
+- Power
+- Mute
+- Volume
+- Bass
+- Treble
+- Balance
+- Zone/source name discovery
+- Push updates from the persistent socket
+
+The integration also exposes a connection binary sensor and Home Assistant diagnostics. PA announcement, DT/keypad status, and Matrio group management are not exposed yet.
 
 ## Runtime model
 

@@ -17,6 +17,9 @@ from .protocol import (
     extract_first_frame,
     parse_state,
     extract_payloads,
+    parse_config,
+    parse_event_payload,
+    parse_status_payload,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +52,12 @@ class Dax88Client:
         self._ready_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
         self._stopped = False
+        self.last_payload_hex: str | None = None
+        self.last_config_payload_hex: str | None = None
+        self.last_status_payload_hex: str | None = None
+        self.last_event_payload_hex: str | None = None
+        self.last_unhandled_payload_hex: str | None = None
+        self.last_status_unknown: dict[str, str] = {}
 
     async def async_start(
         self,
@@ -203,6 +212,7 @@ class Dax88Client:
             return
 
         for payload in payloads:
+            self._record_payload(payload)
             new_state = apply_payload(self.state, payload)
             if new_state is None:
                 _LOGGER.debug("Ignoring unhandled DAX88 payload from %s: %s", self.host, payload.hex(" "))
@@ -212,6 +222,43 @@ class Dax88Client:
                 self._ready_event.set()
                 if self._state_callback is not None:
                     self._state_callback(new_state)
+
+    def diagnostics(self) -> dict[str, str | dict[str, str] | None]:
+        """Return raw frame diagnostics for Home Assistant diagnostics."""
+
+        return {
+            "last_payload_hex": self.last_payload_hex,
+            "last_config_payload_hex": self.last_config_payload_hex,
+            "last_status_payload_hex": self.last_status_payload_hex,
+            "last_event_payload_hex": self.last_event_payload_hex,
+            "last_unhandled_payload_hex": self.last_unhandled_payload_hex,
+            "last_status_unknown": self.last_status_unknown,
+        }
+
+    def _record_payload(self, payload: bytes) -> None:
+        """Remember the latest raw payloads for diagnostics."""
+
+        self.last_payload_hex = payload.hex(" ")
+        config = parse_config(payload)
+        if config is not None:
+            self.last_config_payload_hex = self.last_payload_hex
+            return
+
+        status = parse_status_payload(payload)
+        if status is not None:
+            self.last_status_payload_hex = self.last_payload_hex
+            self.last_status_unknown = {
+                "offset_40_41_hex": status[40:42].hex(" ") if len(status) >= 42 else "",
+                "offset_58_61_hex": status[58:62].hex(" ") if len(status) >= 62 else "",
+            }
+            return
+
+        event = parse_event_payload(payload)
+        if event is not None:
+            self.last_event_payload_hex = self.last_payload_hex
+            return
+
+        self.last_unhandled_payload_hex = self.last_payload_hex
 
     async def _send_and_read(self, frame: bytes, *, collect_until_timeout: bool) -> bytes:
         reader: asyncio.StreamReader | None = None

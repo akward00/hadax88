@@ -10,6 +10,8 @@ custom_components/dax88
 
 It is structured for manual custom-component installs and HACS custom repository installs.
 
+Current release status: core DAX88 zone controls are tested, including power, mute, volume, bass, treble, balance, zone/source names, push updates, connectivity status, and diagnostics.
+
 ## HACS install
 
 1. In HACS, open **Integrations**.
